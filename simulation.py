@@ -222,10 +222,12 @@ class Puzzle:
 class State:
     def __init__(self, grid, remaining, error, next):
         self.grid = grid
-        self.remaining = remaining
+        self.remaining = remaining # set of piece ids
+        self.next_candidates = np.array(list(remaining), dtype=np.uint32) # ordered list of best matching pieces to try
         self.error = error
         self.next = next # linear index in grid where to place next piece
-
+        self.errors = np.zeros(len(remaining))
+        
    
 class Solver:
     def __init__(self, puzzle: Puzzle):
@@ -238,7 +240,7 @@ class Solver:
         # total error is the sum of all side matching errors
         state = State(
             grid = np.zeros((n, m), dtype=np.uint32), # empty grid
-            remaining = [p.id for p in self.puzzle.pieces_dict.values()], # list of pieces
+            remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces
             error = 0.0,
             next = 0 # indicates up to which position in grid the puzzle is filled
             )
@@ -252,60 +254,93 @@ class Solver:
             
             # prune
             if state.error >= best_error:
-                print("PRUNED")
+                #print("PRUNED")
                 continue
                
             # found valid solution
-            if not state.remaining:
+            if len(state.remaining) == 0:
                 print(f"Solution found, error: {state.error}")
+                print(state.grid)
                 best_error = state.error
                 best_solution = state
+                #break
             
             # branch
-            i, j = divmod(state.next, m)
-            for index, candidate_id in enumerate(state.remaining):
-                # describe missing piece
-                left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right.copy() if j > 0 else Side.flat()
-                top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom.copy() if i > 0 else Side.flat()
-                right = Side.unspecified() if j < m - 1 else Side.flat()
-                bottom = Side.unspecified() if i < n - 1 else Side.flat()
+            state = self.heuristic(state) # order pieces before exploring
 
-                placeholder = Piece(
-                    right,
-                    bottom,
-                    left,
-                    top
-                )
-                candidate = self.puzzle.pieces_dict[candidate_id]
-                error = (
-                    self.side_error(placeholder.left, candidate.left) + 
-                    self.side_error(placeholder.right, candidate.right) + 
-                    self.side_error(placeholder.top, candidate.top) + 
-                    self.side_error(placeholder.bottom, candidate.bottom)
-                )
-                
-                # reject not matching pieces
-                if error == float('inf'):
-                    continue
-                
-                # prune
-                new_error = state.error + error
-                if new_error >= best_error:
-                    continue # not worth exploring
-                
+            # use descending order to allow DFS
+            state.errors = state.errors[::-1]
+            state.next_candidates = state.next_candidates[::-1]
+            
+            # prune
+            new_errors = state.errors + state.error
+            mask = new_errors < best_error
+            state.errors = state.errors[mask]
+            state.next_candidates = state.next_candidates[mask]
+            
+            
+            i, j = divmod(state.next, m)
+            for index, candidate_id in enumerate(state.next_candidates):
+                                
                 grid = state.grid.copy()
                 grid[i][j] = candidate_id
+                remaining = state.remaining.copy()
+                remaining.remove(candidate_id)
                 new_state = State(
                     grid = grid,
-                    remaining = state.remaining[:index] + state.remaining[index+1:],
-                    error = new_error,
+                    remaining = remaining,
+                    error = new_errors[index],
                     next = state.next + 1
                 )
                 
                 queue.append(new_state)
-                
+        
+        print("DONE")
         print(best_solution.grid)
         #self.puzzle.grid = best_solution.grid
+    
+    
+    # sort remaining pieces by error
+    def heuristic(self, state):
+        n, m = self.puzzle.size
+        # describe missing piece
+        i, j = divmod(state.next, m)
+        left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right.copy() if j > 0 else Side.flat()
+        top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom.copy() if i > 0 else Side.flat()
+        right = Side.unspecified() if j < m - 1 else Side.flat()
+        bottom = Side.unspecified() if i < n - 1 else Side.flat()
+
+        placeholder = Piece(
+            right,
+            bottom,
+            left,
+            top
+        )
+        
+        # calculate errors
+        for index, candidate_id in enumerate(state.next_candidates):
+            candidate = self.puzzle.pieces_dict[candidate_id]
+            state.errors[index] = (
+                self.side_error(placeholder.left, candidate.left) + 
+                self.side_error(placeholder.right, candidate.right) + 
+                self.side_error(placeholder.top, candidate.top) + 
+                self.side_error(placeholder.bottom, candidate.bottom)
+            )
+            
+        # prune inf errors
+        mask = state.errors != np.inf
+        state.errors = state.errors[mask]
+        state.next_candidates = state.next_candidates[mask]
+        
+        # sort according to error
+        idx = np.argsort(state.errors)
+        state.errors = state.errors[idx]
+        state.next_candidates = state.next_candidates[idx]
+        #print(state.errors, state.next_candidates, state.remaining)
+        
+        
+        return state
+    
     
     # find locally optimal solution, may fail to solve puzzle
     def solve(self):
@@ -424,12 +459,11 @@ if __name__ == "__main__":
    
     vis = Visualizer()
     
-    puzzle = Puzzle(6, 6)
+    puzzle = Puzzle(10, 10)
     puzzle.generate()
     
+    #vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
     #solver.solve()
     solver.branchAndBound()
-
-    vis.showPuzzle(puzzle)
