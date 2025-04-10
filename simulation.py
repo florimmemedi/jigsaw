@@ -21,9 +21,8 @@ class Visualizer:
 
         for i in range(n):
             for j in range(m):
-                piece = puzzle.grid[i][j]
-                if piece:
-                    self.draw_piece(ax, i, j, piece)
+                piece_id = puzzle.grid[i][j]
+                self.draw_piece(ax, i, j, puzzle.pieces_dict[piece_id])
 
         plt.show()
 
@@ -153,6 +152,57 @@ class Side:
     def unspecified():
         """Placeholder side for solver input (no constraint)."""
         return Side(None, True, kind="unspecified")
+        
+    
+    
+    # compare sides of pieces
+    def distance(self, other: "Side"):
+        if not other:
+            raise ValueError("Side was None, not supported")
+            
+        # sides legend: __flat, --unspecified, _._normal
+        
+        # handle all flat cases
+        # __ vs __
+        # __ vs --
+        # -- vs __
+        # __ vs _._
+        # _._ vs __
+        if self.kind == "flat" or other.kind == "flat":
+            return 0 if self.kind == other.kind else float('inf')
+        
+        # don't allow matching an underspecified piece
+        # -- vs --
+        # _._ vs --
+        if other.kind == "unspecified":
+            return float('inf')
+            
+        # handle case where any normal edge matches
+        # -- vs _._
+        if self.kind == "unspecified":
+            return 0
+        
+
+        # normal kind — check polarity + geometry
+        # _._ vs _._
+        if self.male == other.male:
+            return float('inf')
+        if self.spline is None or other.spline is None:
+            return float('inf')
+        
+        
+        # use peak distance
+        return self.max_dist(other)
+
+
+    # spline dist measure, distance between peaks
+    def max_dist(self, other: "Side"):
+        points = self.spline.shape[0]
+        id1 = np.argmax(np.abs(self.spline[:, 1]))
+        id2 = np.argmax(np.abs(other.spline[:, 1]))
+        return np.abs(id1 - id2)
+        
+  
 
 class Piece:
     def __init__(self, right, bottom, left, top, id=None):
@@ -182,7 +232,10 @@ class Puzzle:
 
     def generate(self):
         n, m = self.size
-        grid = [[None for _ in range(m)] for _ in range(n)]
+        grid = np.zeros((n, m), dtype=np.uint32)
+        # random ids for pieces
+        ids = np.arange(n*m)
+        np.random.shuffle(ids)
         counter = 0
 
         for i in range(n):
@@ -192,11 +245,11 @@ class Puzzle:
 
                 # match left neighbor's right
                 if j > 0:
-                    left = grid[i][j - 1].right.copy()
+                    left = self.pieces_dict[grid[i][j - 1]].right.copy()
                     left.male = not left.male
                 # match top neighbor's bottom
                 if i > 0:
-                    top = grid[i - 1][j].bottom.copy()
+                    top = self.pieces_dict[grid[i - 1][j]].bottom.copy()
                     top.male = not top.male
 
                 # generate new sides
@@ -208,16 +261,20 @@ class Puzzle:
                 if i < n - 1:
                     bottom = Side.generate(self.num_points, self.height)
 
-                piece = Piece(right, bottom, left, top, id=counter)
-                grid[i][j] = piece
-                self.pieces.append(piece)
+                piece = Piece(right, bottom, left, top, id=ids[counter])
+                grid[i][j] = piece.id
+                #self.pieces.append(piece)
+                self.pieces_dict[piece.id] = piece
                 counter += 1
 
         self.solution = grid
-        random.shuffle(self.pieces)
-        for p in self.pieces:
-            self.pieces_dict[p.id] = p
-        self.grid = np.reshape(self.pieces, self.size).tolist()
+        #random.shuffle(self.pieces)
+        shuffled = grid.flatten()
+        np.random.shuffle(shuffled)
+        self.grid = np.reshape(shuffled, self.size)
+        #for p in self.pieces:
+        #    self.pieces_dict[p.id] = p
+        #self.grid = np.reshape(self.pieces, self.size).tolist()
 
 class State:
     def __init__(self, grid, remaining, error, next):
@@ -240,7 +297,7 @@ class Solver:
         # total error is the sum of all side matching errors
         state = State(
             grid = np.zeros((n, m), dtype=np.uint32), # empty grid
-            remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces
+            remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces remaining to be placed
             error = 0.0,
             next = 0 # indicates up to which position in grid the puzzle is filled
             )
@@ -259,11 +316,10 @@ class Solver:
                
             # found valid solution
             if len(state.remaining) == 0:
-                print(f"Solution found, error: {state.error}")
-                print(state.grid)
+                #print(f"Solution found, error: {state.error}")
+                #print(state.grid)
                 best_error = state.error
                 best_solution = state
-                #break
             
             # branch
             state = self.heuristic(state) # order pieces before exploring
@@ -295,8 +351,10 @@ class Solver:
                 
                 queue.append(new_state)
         
-        print("DONE")
+        print(f"DONE with error: {best_error}")
         print(best_solution.grid)
+        
+        return best_solution.grid
         #self.puzzle.grid = best_solution.grid
     
     
@@ -321,10 +379,10 @@ class Solver:
         for index, candidate_id in enumerate(state.next_candidates):
             candidate = self.puzzle.pieces_dict[candidate_id]
             state.errors[index] = (
-                self.side_error(placeholder.left, candidate.left) + 
-                self.side_error(placeholder.right, candidate.right) + 
-                self.side_error(placeholder.top, candidate.top) + 
-                self.side_error(placeholder.bottom, candidate.bottom)
+                placeholder.left.distance(candidate.left) + 
+                placeholder.right.distance(candidate.right) + 
+                placeholder.top.distance(candidate.top) + 
+                placeholder.bottom.distance(candidate.bottom)
             )
             
         # prune inf errors
@@ -389,10 +447,10 @@ class Solver:
 
         for i, candidate in enumerate(self.puzzle.pieces):
             total_error = \
-                self.side_error(piece.left, candidate.left) + \
-                self.side_error(piece.right, candidate.right) + \
-                self.side_error(piece.top, candidate.top) + \
-                self.side_error(piece.bottom, candidate.bottom)
+                piece.left.distance(candidate.left) + \
+                piece.right.distance(candidate.right) + \
+                piece.top.distance(candidate.top) + \
+                piece.bottom.distance(andidate.bottom)
                 
             if total_error < min_error:
                 best_idx = i
@@ -404,52 +462,8 @@ class Solver:
         return self.puzzle.pieces.pop(best_idx), total_error
         
         
-    # compare sides of pieces
-    def side_error(self, s1: Side, s2: Side):
-        
-        #s1.kind== unspecified, s2.kind==Flat
-        if not s1 or not s2:
-            raise ValueError("A side was None, not supported")
-            
-        # sides legend: __flat, --unspecified, _._normal
-        
-        # handle all flat cases
-        # __ vs __
-        # __ vs --
-        # -- vs __
-        # __ vs _._
-        # _._ vs __
-        if s1.kind == "flat" or s2.kind == "flat":
-            return 0 if s1.kind == s2.kind else float('inf')
-        
-        # don't allow matching an underspecified piece
-        # -- vs --
-        # _._ vs --
-        if s2.kind == "unspecified":
-            return float('inf')
-            
-        # handle case where any normal edge matches
-        # -- vs _._
-        if s1.kind == "unspecified":
-            return 0
-        
-        
 
-        # normal kind — check polarity + geometry
-        # _._ vs _._
-        if s1.male == s2.male:
-            return float('inf')
-        if s1.spline is None or s2.spline is None:
-            return float('inf')
-            
-            
-        # use peak distance instead of l2 norm
-        #return np.linalg.norm(s1.spline - s2.spline)
-        points = s1.spline.shape[0]
-        id1 = np.argmax(np.abs(s1.spline[:, 1]))
-        id2 = np.argmax(np.abs(s2.spline[:, 1]))
-        return np.abs(id1 - id2) #/ points
-    
+
 
 if __name__ == "__main__":
     
@@ -459,11 +473,21 @@ if __name__ == "__main__":
    
     vis = Visualizer()
     
-    puzzle = Puzzle(10, 10)
+    
+    n, m = 6,6
+    puzzle = Puzzle(n, m)
     puzzle.generate()
     
     #vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
     #solver.solve()
-    solver.branchAndBound()
+    puzzle.grid = solver.branchAndBound()
+    
+    # check solution
+    for i in range(n):
+        for j in range(m):
+            assert(puzzle.grid[i, j] == puzzle.solution[i, j])
+    
+    print('Solution valid')
+    vis.showPuzzle(puzzle)
