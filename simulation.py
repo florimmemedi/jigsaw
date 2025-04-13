@@ -384,6 +384,9 @@ class State:
 class Solver:
     def __init__(self, puzzle: Puzzle):
         self.puzzle = puzzle
+        n, m = puzzle.size
+        self.randomErrorThreshold = 0.1 # per piece error threshold, set to 0 for perfect matching, gather sensible values from puzzle.getRandomError()
+        self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded optimal and search aborted
         
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
@@ -401,28 +404,25 @@ class Solver:
         
         # logging info
         states_explored = 0
-        states_pruned = 0
-        total_number_of_states = math.factorial(n*m)
         
         queue = [state]
         
         while queue:
             state = queue.pop() # use as stack -> DFS
-            percentage_pruned = states_pruned / total_number_of_states
-            #print(states_pruned, total_number_of_states)
-            print(f'Explored: {states_explored}, Pruned: {percentage_pruned:.5}%')
+            print(f'Explored: {states_explored}')
             
             # prune
             if state.error >= best_error:
                 #print("PRUNED")
                 level = state.next
-                states_pruned += math.factorial(n*m - level)
                 continue
                
             # found valid solution
             if len(state.remaining) == 0:
-                #print(f"Solution found, error: {state.error}")
-                #print(state.grid)
+                print(f"Local solution found, error: {state.error}")
+                if state.error < self.abortThreshold:
+                    return state.grid
+                    
                 best_error = state.error
                 best_solution = state
             
@@ -437,7 +437,6 @@ class Solver:
             new_errors = state.errors + state.error
             mask = new_errors < best_error
             level = state.next
-            states_pruned += int(np.sum(mask == 0)) * math.factorial(n*m - level)
             state.errors = state.errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
@@ -458,11 +457,10 @@ class Solver:
                 states_explored += 1
                 queue.append(new_state)
         
-        print(f"DONE with error: {best_error}")
+        print(f"Globally optimal solution found with error: {best_error}")
         print(best_solution.grid)
         
         return best_solution.grid
-        #self.puzzle.grid = best_solution.grid
     
     
     # sort remaining pieces by error
@@ -487,8 +485,8 @@ class Solver:
             candidate = self.puzzle.pieces_dict[candidate_id]
             state.errors[index] = placeholder.distance(candidate)
             
-        # prune using error threshold (just for testing: 0.0 finds only perfect matches) gather from puzzle.getRandomError()
-        mask = state.errors <= 0.1
+        # prune using error threshold
+        mask = state.errors <= self.randomErrorThreshold
         state.errors = state.errors[mask]
         state.next_candidates = state.next_candidates[mask]
             
@@ -582,14 +580,14 @@ if __name__ == "__main__":
     vis = Visualizer()
     
     
-    n, m = 4,4
+    n, m = 17, 17
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
     #print(puzzle.getRandomError(10000))
     #exit()
     
-    vis.showPuzzle(puzzle)
+    #vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
     #solver.solve()
