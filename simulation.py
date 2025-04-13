@@ -7,6 +7,7 @@ import matplotlib.patches as patches
 import random
 import math
 import numpy as np
+import scipy
 
 class Visualizer:
     def __init__(self, cell_size=1):
@@ -68,9 +69,9 @@ class Visualizer:
         if side.spline is not None:
             spline = side.spline.copy()
 
-            # Parameters for visual gap
-            edge_margin = 0.1 * self.cell_size
-            shrink = 0.2  # percentage to shrink the spline horizontally (0.0–1.0)
+            # Parameters for visual gap (use 0.1 and 0.2 to best see both splines)
+            edge_margin = 0.0 * self.cell_size
+            shrink = 0.0  # percentage to shrink the spline horizontally (0.0–1.0)
 
             # Shrink x range inward (spline[:,0] in [0,1])
             center_x = 0.5
@@ -123,27 +124,94 @@ class Visualizer:
             ax.plot(spline[:, 0], spline[:, 1], color=color, linewidth=1)
 
 
-        
+def generate_spline_from_params(p: dict, num_interp_points: int = 9):
+    """Generate a spline based on shape parameters (as used in interactive tool)."""
+    def offset(y): return y + p["height_offset"]
+
+    points = [
+        (0, 0),
+        (p["center"] - p["neck_width"]/2.0, offset(p["neck_heigth"])),
+        (p["center"] - p["head_width"]/2.0, offset(p["head_height"])),
+        (p["center"], offset(p["height"])),
+        (p["center"] + p["head_width"]/2.0, offset(p["head_height"])),
+        (p["center"] + p["neck_width"]/2.0, offset(p["neck_heigth"])),
+        (1, 0)
+    ]
+
+    points = np.array(points)
+    t = np.arange(len(points))
+    t_interp = np.linspace(t.min(), t.max(), num_interp_points)
+    spline_x = scipy.interpolate.make_interp_spline(t, points[:, 0])
+    spline_y = scipy.interpolate.make_interp_spline(t, points[:, 1])
+    xs = spline_x(t_interp)
+    ys = spline_y(t_interp)
+    return np.stack((xs, ys), axis=1)
+
+
+# Apply projective transformation to (x, y) points
+def apply_projective(points, proj):
+    H = np.array([
+        [proj["scale_x"], proj["shear_x"], proj["translate_x"]],
+        [proj["shear_y"], proj["scale_y"], proj["translate_y"]],
+        [proj["perspective_x"], proj["perspective_y"], 1.0]
+    ])
+    pts = np.column_stack((points, np.ones(len(points))))
+    pts_proj = pts @ H.T
+    pts_proj /= pts_proj[:, 2][:, None]
+    return pts_proj[:, :2]
+       
 class Side:
     def __init__(self, spline: np.ndarray, male: bool, kind: str = "normal"):
         self.spline = spline
         self.male = male
         self.kind = kind  # "normal", "flat", or "unspecified"
 
+    # apply slight deformation
     def copy(self):
-        return Side(np.copy(self.spline) if self.spline is not None else None,
-                    self.male,
-                    self.kind)
+        if self.spline is None:
+            return Side(None, self.male, self.kind)
+            
+        # small perturbations
+        delta_e = 0.02
+        projective = {
+            "scale_x": 1.0,
+            "shear_x": np.random.uniform(-delta_e, delta_e),
+            "translate_x": 0.0,
+            "shear_y": np.random.uniform(-delta_e, delta_e),
+            "scale_y": 1.0,
+            "translate_y": 0.0,
+            "perspective_x": np.random.uniform(-delta_e, delta_e),
+            "perspective_y": np.random.uniform(-delta_e, delta_e)
+        }
+        spline = apply_projective(np.copy(self.spline), projective)
+        
+        return Side(spline, self.male, self.kind)
 
+    # @staticmethod
+    # def generate(num_points: int, height: float):
+        # """Generate a normal side with a random bump."""
+        # x = np.linspace(0, 1, num_points)
+        # y = np.zeros(num_points)
+        # idx = np.random.randint(0, num_points)
+        # y[idx] = height
+        # spline = np.stack((x, y), axis=1)
+        # return Side(spline, random.choice([True, False]), kind="normal")
+    
     @staticmethod
-    def generate(num_points: int, height: float):
-        """Generate a normal side with a random bump."""
-        x = np.linspace(0, 1, num_points)
-        y = np.zeros(num_points)
-        idx = np.random.randint(0, num_points)
-        y[idx] = height
-        spline = np.stack((x, y), axis=1)
+    def generate(num_points: int):
+        """Generate a side with random center and height_offset; all other params fixed."""
+        p = {
+            "center": np.random.uniform(0.2, 0.8),
+            "height": 0.376,
+            "neck_width": 0.077,
+            "neck_heigth": 0.174,
+            "head_width": 0.262,
+            "head_height": 0.301,
+            "height_offset": np.random.uniform(-0.2, -0.1)
+        }
+        spline = generate_spline_from_params(p, num_interp_points=num_points)
         return Side(spline, random.choice([True, False]), kind="normal")
+
 
     @staticmethod
     def flat():
@@ -193,10 +261,14 @@ class Side:
         if self.spline is None or other.spline is None:
             return float('inf')
         
+        # l2 distance
+        distances = np.linalg.norm(self.spline - other.spline, axis=1)
+        return np.mean(distances) / 4.0
         
         # use peak distance
-        return self.max_dist(other)
+        #return self.max_dist(other)
 
+    
 
     # spline dist measure, distance between peaks
     def max_dist(self, other: "Side"):
@@ -231,7 +303,7 @@ class Piece:
         
         
 class Puzzle:
-    def __init__(self, n, m, num_points=9, height=0.1):
+    def __init__(self, n, m, num_points=100):
         assert(n*m < 2**32) # uint32 for ids
         self.size = (n, m)
         self.grid = [[None for _ in range(m)] for _ in range(n)]
@@ -239,7 +311,6 @@ class Puzzle:
         self.pieces_dict = {}
         self.solution = [[]]
         self.num_points = num_points
-        self.height = height
 
     def generate(self):
         n, m = self.size
@@ -266,11 +337,11 @@ class Puzzle:
                 # generate new sides
                 right = Side.flat()
                 if j < m - 1:
-                    right = Side.generate(self.num_points, self.height)
+                    right = Side.generate(self.num_points)
 
                 bottom = Side.flat()
                 if i < n - 1:
-                    bottom = Side.generate(self.num_points, self.height)
+                    bottom = Side.generate(self.num_points)
                     
 
                 piece = Piece(right, bottom, left, top, id=ids[counter])
@@ -289,13 +360,16 @@ class Puzzle:
     def getRandomError(self, iterations):
         n, m = self.size
         idxs = np.random.randint(0, n*m, 2*iterations)
+        errors = []
         for i in range(iterations):
             piece1 = self.pieces_dict[idxs[2*i]]
             piece2 = self.pieces_dict[idxs[2*i + 1]]
             
             error = piece1.distance(piece2)
             if error != float('inf'):
-                print(error)
+                errors.append(error)
+                
+        print(f'samples: {len(errors)}, mean: {np.mean(errors)}, std: {np.std(errors)}')
 
 class State:
     def __init__(self, grid, remaining, error, next):
@@ -413,8 +487,8 @@ class Solver:
             candidate = self.puzzle.pieces_dict[candidate_id]
             state.errors[index] = placeholder.distance(candidate)
             
-        # prune using error threshold (just for testing: finds only perfect matches) TODO: remove
-        mask = state.errors <= 0.0
+        # prune using error threshold (just for testing: 0.0 finds only perfect matches) gather from puzzle.getRandomError()
+        mask = state.errors <= 0.1
         state.errors = state.errors[mask]
         state.next_candidates = state.next_candidates[mask]
             
@@ -508,7 +582,7 @@ if __name__ == "__main__":
     vis = Visualizer()
     
     
-    n, m = 5,5
+    n, m = 4,4
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
@@ -527,4 +601,4 @@ if __name__ == "__main__":
             assert(puzzle.grid[i, j] == puzzle.solution[i, j])
     
     print('Solution valid')
-    #vis.showPuzzle(puzzle)
+    vis.showPuzzle(puzzle)
