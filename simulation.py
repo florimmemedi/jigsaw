@@ -47,7 +47,7 @@ class Visualizer:
         self.draw_side(ax, x, y + cs/2, piece.left, 'left')
         
         # Draw piece ID in the center
-        ax.text(x + cs / 2, y + cs / 2, str(piece.id),
+        ax.text(x + cs / 2, y + cs / 2, f'{str(piece.id)} ({str(piece.orientation)})',
                 ha='center', va='center', fontsize=8, color='black')
 
     def draw_side(self, ax, x_data, y_data, side, position):
@@ -213,6 +213,7 @@ class Piece:
         self.bottom = bottom
         self.left = left
         self.top = top
+        self.orientation = 0
         self.id = id
         
     def invert(self): # change polarity of sides, male <-> female
@@ -270,6 +271,7 @@ class Puzzle:
                 bottom = Side.flat()
                 if i < n - 1:
                     bottom = Side.generate(self.num_points, self.height)
+                    
 
                 piece = Piece(right, bottom, left, top, id=ids[counter])
                 grid[i][j] = piece.id
@@ -282,9 +284,6 @@ class Puzzle:
         shuffled = grid.flatten()
         np.random.shuffle(shuffled)
         self.grid = np.reshape(shuffled, self.size)
-        #for p in self.pieces:
-        #    self.pieces_dict[p.id] = p
-        #self.grid = np.reshape(self.pieces, self.size).tolist()
         
     # calculate mean error between random pieces
     def getRandomError(self, iterations):
@@ -414,7 +413,7 @@ class Solver:
             candidate = self.puzzle.pieces_dict[candidate_id]
             state.errors[index] = placeholder.distance(candidate)
             
-        # prune using error threshold (just for testing) TODO: remove
+        # prune using error threshold (just for testing: finds only perfect matches) TODO: remove
         mask = state.errors <= 0.0
         state.errors = state.errors[mask]
         state.next_candidates = state.next_candidates[mask]
@@ -509,14 +508,14 @@ if __name__ == "__main__":
     vis = Visualizer()
     
     
-    n, m = 10,10
+    n, m = 5,5
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
     #print(puzzle.getRandomError(10000))
     #exit()
     
-    #vis.showPuzzle(puzzle)
+    vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
     #solver.solve()
