@@ -1,9 +1,11 @@
 # Simulated Puzzle to solve
 
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 import random
+import math
 import numpy as np
 
 class Visualizer:
@@ -156,6 +158,7 @@ class Side:
     
     
     # compare sides of pieces
+    # returns error in [0, 1/4], so for side errors add up to [0, 1]
     def distance(self, other: "Side"):
         if not other:
             raise ValueError("Side was None, not supported")
@@ -200,7 +203,7 @@ class Side:
         points = self.spline.shape[0]
         id1 = np.argmax(np.abs(self.spline[:, 1]))
         id2 = np.argmax(np.abs(other.spline[:, 1]))
-        return np.abs(id1 - id2)
+        return np.abs(id1 - id2) / points * 0.25 # return error in range [0, 0.25]
         
   
 
@@ -217,6 +220,13 @@ class Piece:
         if self.bottom: self.bottom.male = not self.bottom.male
         if self.left: self.left.male = not self.left.male
         if self.top: self.top.male = not self.top.male
+        
+    # calculate matching error
+    def distance(self, other):
+        return (self.left.distance(other.left) + 
+                self.right.distance(other.right) + 
+                self.top.distance(other.top) + 
+                self.bottom.distance(other.bottom))
         
         
 class Puzzle:
@@ -275,6 +285,18 @@ class Puzzle:
         #for p in self.pieces:
         #    self.pieces_dict[p.id] = p
         #self.grid = np.reshape(self.pieces, self.size).tolist()
+        
+    # calculate mean error between random pieces
+    def getRandomError(self, iterations):
+        n, m = self.size
+        idxs = np.random.randint(0, n*m, 2*iterations)
+        for i in range(iterations):
+            piece1 = self.pieces_dict[idxs[2*i]]
+            piece2 = self.pieces_dict[idxs[2*i + 1]]
+            
+            error = piece1.distance(piece2)
+            if error != float('inf'):
+                print(error)
 
 class State:
     def __init__(self, grid, remaining, error, next):
@@ -304,14 +326,24 @@ class Solver:
         best_error = float('inf')
         best_solution = state
         
+        # logging info
+        states_explored = 0
+        states_pruned = 0
+        total_number_of_states = math.factorial(n*m)
+        
         queue = [state]
         
         while queue:
             state = queue.pop() # use as stack -> DFS
+            percentage_pruned = states_pruned / total_number_of_states
+            #print(states_pruned, total_number_of_states)
+            print(f'Explored: {states_explored}, Pruned: {percentage_pruned:.5}%')
             
             # prune
             if state.error >= best_error:
                 #print("PRUNED")
+                level = state.next
+                states_pruned += math.factorial(n*m - level)
                 continue
                
             # found valid solution
@@ -331,6 +363,8 @@ class Solver:
             # prune
             new_errors = state.errors + state.error
             mask = new_errors < best_error
+            level = state.next
+            states_pruned += int(np.sum(mask == 0)) * math.factorial(n*m - level)
             state.errors = state.errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
@@ -348,7 +382,7 @@ class Solver:
                     error = new_errors[index],
                     next = state.next + 1
                 )
-                
+                states_explored += 1
                 queue.append(new_state)
         
         print(f"DONE with error: {best_error}")
@@ -378,12 +412,13 @@ class Solver:
         # calculate errors
         for index, candidate_id in enumerate(state.next_candidates):
             candidate = self.puzzle.pieces_dict[candidate_id]
-            state.errors[index] = (
-                placeholder.left.distance(candidate.left) + 
-                placeholder.right.distance(candidate.right) + 
-                placeholder.top.distance(candidate.top) + 
-                placeholder.bottom.distance(candidate.bottom)
-            )
+            state.errors[index] = placeholder.distance(candidate)
+            
+        # prune using error threshold (just for testing) TODO: remove
+        mask = state.errors <= 0.0
+        state.errors = state.errors[mask]
+        state.next_candidates = state.next_candidates[mask]
+            
             
         # prune inf errors
         mask = state.errors != np.inf
@@ -474,9 +509,12 @@ if __name__ == "__main__":
     vis = Visualizer()
     
     
-    n, m = 6,6
+    n, m = 10,10
     puzzle = Puzzle(n, m)
     puzzle.generate()
+    
+    #print(puzzle.getRandomError(10000))
+    #exit()
     
     #vis.showPuzzle(puzzle)
 
@@ -490,4 +528,4 @@ if __name__ == "__main__":
             assert(puzzle.grid[i, j] == puzzle.solution[i, j])
     
     print('Solution valid')
-    vis.showPuzzle(puzzle)
+    #vis.showPuzzle(puzzle)
