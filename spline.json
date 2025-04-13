@@ -1,0 +1,21 @@
+{
+  "params": {
+    "center": 0.415,
+    "height": 0.376,
+    "neck_width": 0.077,
+    "neck_heigth": 0.174,
+    "head_width": 0.262,
+    "head_height": 0.301,
+    "height_offset": -0.156
+  },
+  "projective": {
+    "scale_x": 1.0,
+    "shear_x": 0.0,
+    "translate_x": 0.0,
+    "shear_y": 0.0,
+    "scale_y": 1.0,
+    "translate_y": 0.0,
+    "perspective_x": 0.0,
+    "perspective_y": 0.5354838709677421
+  }
+}
