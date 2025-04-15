@@ -359,7 +359,7 @@ def getRandomMatchError(iterations = 1000):
     
     mean = np.mean(errors)
     std = np.std(errors)
-    print(f'RandomMatchError: samples: {len(errors)}, mean: {mean}, std: {std}')
+    print(f'RandomMatchError: samples: {len(errors)}, mean: {mean:.5f}, std: {std:.5f}')
     return mean, std
     
 
@@ -378,7 +378,7 @@ def getRandomError(iterations):
         
     mean = np.mean(errors)
     std = np.std(errors)
-    print(f'RandomError: samples: {len(errors)}, mean: {mean}, std: {std}')
+    print(f'RandomError: samples: {len(errors)}, mean: {mean:.5f}, std: {std:.5f}')
     return mean, std
 
 class State:
@@ -409,19 +409,34 @@ class Solver:
         self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
         
+        # grid holds ids of already placed pieces, negative values indicate preferred order of placing next missin piece. more neg = place first
+        self.initialGrid = np.full((n, m), -1, dtype=np.int32)
+
+        # Set all edges to -2
+        self.initialGrid[0, :] = -2
+        self.initialGrid[-1, :] = -2
+        self.initialGrid[:, 0] = -2
+        self.initialGrid[:, -1] = -2
+
+        # Set corners to -3 (they overwrite the -2s)
+        self.initialGrid[0, 0] = -3
+        self.initialGrid[0, -1] = -3
+        self.initialGrid[-1, 0] = -3
+        self.initialGrid[-1, -1] = -3
+
+        
         self.grid_counter = np.zeros((n, m)) # count how many trys are needed per location during solving
         
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
         n, m = self.puzzle.size
-        # state is defined as grid of placed pieces, and list of pieces still to be placed
-        # total error is the sum of all side matching errors
+        
         state = State(
-            grid = np.ones((n, m), dtype=np.int32) * (-1), # empty grid is negative
+            grid = self.initialGrid, # empty grid is negative
             grid_orientations = np.zeros((n, m), dtype=np.uint32), # empty
             remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces remaining to be placed
-            error = 0.0,
-            next = 0, # start with top left
+            error = 0.0, # total error is the sum of all side matching errors
+            next = np.argmin(self.initialGrid), # start with most negative position
             )
         best_error = float('inf')
         best_solution = state
@@ -445,7 +460,7 @@ class Solver:
                
             # found valid solution
             if len(state.remaining) == 0:
-                print(f"\nLocal solution found, error: {state.error}")
+                print(f"\nLocal solution found, error: {state.error:.5f}")
                 if state.error < self.abortThreshold:
                     return state.grid, state.grid_orientations
                     
@@ -533,23 +548,19 @@ class Solver:
                 grid_orientations = state.grid_orientations.copy()
                 grid_orientations[i][j] = orientation
                 remaining = state.remaining.copy()
-                remaining.remove(candidate_id)          
-                
-                # index of first remaining negative element in grid
-                neg_indices = np.flatnonzero(grid < 0)
-                next = neg_indices[0] if len(neg_indices) > 0 else None
+                remaining.remove(candidate_id)
                 
                 new_state = State(
                     grid = grid,
                     grid_orientations = grid_orientations,
                     remaining = remaining,
                     error = new_errors[index],
-                    next = next
+                    next = np.argmin(grid) # best position to solve next
                 )
                 
                 heapq.heappush(queue, new_state)
         
-        print(f"\nGlobally optimal solution found with error: {best_error}")        
+        print(f"\nGlobally optimal solution found with error: {best_error:.5f}")        
         return best_solution.grid, best_solution.grid_orientations
     
 
@@ -560,7 +571,7 @@ if __name__ == "__main__":
     
     vis = Visualizer()
     
-    n, m = 6,6
+    n, m = 10, 10
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
