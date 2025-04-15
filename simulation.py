@@ -42,10 +42,10 @@ class Visualizer:
         ax.add_patch(rect)
 
         # Draw side indicators (text or small lines)
-        self.draw_side(ax, x + cs/2, y, piece.top, 'top')
-        self.draw_side(ax, x + cs, y + cs/2, piece.right, 'right')
-        self.draw_side(ax, x + cs/2, y + cs, piece.bottom, 'bottom')
-        self.draw_side(ax, x, y + cs/2, piece.left, 'left')
+        self.draw_side(ax, x + cs/2, y, piece.top(), 'top')
+        self.draw_side(ax, x + cs, y + cs/2, piece.right(), 'right')
+        self.draw_side(ax, x + cs/2, y + cs, piece.bottom(), 'bottom')
+        self.draw_side(ax, x, y + cs/2, piece.left(), 'left')
         
         # Draw piece ID in the center
         ax.text(x + cs / 2, y + cs / 2, f'{str(piece.id)} ({str(piece.orientation)})',
@@ -187,18 +187,9 @@ class Side:
         
         return Side(spline, self.male, self.kind)
 
-    # @staticmethod
-    # def generate(num_points: int, height: float):
-        # """Generate a normal side with a random bump."""
-        # x = np.linspace(0, 1, num_points)
-        # y = np.zeros(num_points)
-        # idx = np.random.randint(0, num_points)
-        # y[idx] = height
-        # spline = np.stack((x, y), axis=1)
-        # return Side(spline, random.choice([True, False]), kind="normal")
     
     @staticmethod
-    def generate(num_points: int):
+    def generate(num_points: int = 100):
         """Generate a side with random center and height_offset; all other params fixed."""
         p = {
             "center": np.random.uniform(0.2, 0.8),
@@ -228,9 +219,6 @@ class Side:
     # compare sides of pieces
     # returns error in [0, 1/4], so for side errors add up to [0, 1]
     def distance(self, other: "Side"):
-        if not other:
-            raise ValueError("Side was None, not supported")
-            
         # sides legend: __flat, --unspecified, _._normal
         
         # handle all flat cases
@@ -261,56 +249,47 @@ class Side:
         if self.spline is None or other.spline is None:
             return float('inf')
         
-        # l2 distance
+        # L2 distance
         distances = np.linalg.norm(self.spline - other.spline, axis=1)
         return np.mean(distances) / 4.0
-        
-        # use peak distance
-        #return self.max_dist(other)
-
-    
-
-    # spline dist measure, distance between peaks
-    def max_dist(self, other: "Side"):
-        points = self.spline.shape[0]
-        id1 = np.argmax(np.abs(self.spline[:, 1]))
-        id2 = np.argmax(np.abs(other.spline[:, 1]))
-        return np.abs(id1 - id2) / points * 0.25 # return error in range [0, 0.25]
-        
+                
   
 
 class Piece:
     def __init__(self, right, bottom, left, top, id=None):
-        self.right = right
-        self.bottom = bottom
-        self.left = left
-        self.top = top
+        self.sides = [right, bottom, left, top]
         self.orientation = 0
         self.id = id
         
+    def right(self):
+        return self.sides[(self.orientation + 0) % 4]
+        
+    def bottom(self):
+        return self.sides[(self.orientation + 1) % 4]
+        
+    def left(self):
+        return self.sides[(self.orientation + 2) % 4]
+        
+    def top(self):
+        return self.sides[(self.orientation + 3) % 4]
+        
     def invert(self): # change polarity of sides, male <-> female
-        if self.right: self.right.male = not self.right.male
-        if self.bottom: self.bottom.male = not self.bottom.male
-        if self.left: self.left.male = not self.left.male
-        if self.top: self.top.male = not self.top.male
+        for side in self.sides:
+            side.male = not side.male
         
     # calculate matching error
-    def distance(self, other):
-        return (self.left.distance(other.left) + 
-                self.right.distance(other.right) + 
-                self.top.distance(other.top) + 
-                self.bottom.distance(other.bottom))
+    def distance(self, other, orientation = 0):
+        rotated = other.sides[-orientation:] + other.sides[:-orientation]
+        return sum([side.distance(other_side) for side, other_side in zip(self.sides, rotated)])
         
         
 class Puzzle:
-    def __init__(self, n, m, num_points=100):
+    def __init__(self, n, m):
         assert(n*m < 2**32) # uint32 for ids
         self.size = (n, m)
         self.grid = [[None for _ in range(m)] for _ in range(n)]
-        self.pieces = []
         self.pieces_dict = {}
         self.solution = [[]]
-        self.num_points = num_points
 
     def generate(self):
         n, m = self.size
@@ -324,37 +303,42 @@ class Puzzle:
             for j in range(m):
                 left = Side.flat()
                 top = Side.flat()
-
+                    
+                
                 # match left neighbor's right
                 if j > 0:
-                    left = self.pieces_dict[grid[i][j - 1]].right.copy()
+                    left = self.pieces_dict[grid[i][j - 1]].right().copy()
                     left.male = not left.male
+                    
                 # match top neighbor's bottom
                 if i > 0:
-                    top = self.pieces_dict[grid[i - 1][j]].bottom.copy()
+                    top = self.pieces_dict[grid[i - 1][j]].bottom().copy()
                     top.male = not top.male
 
                 # generate new sides
                 right = Side.flat()
                 if j < m - 1:
-                    right = Side.generate(self.num_points)
+                    right = Side.generate()
 
                 bottom = Side.flat()
                 if i < n - 1:
-                    bottom = Side.generate(self.num_points)
-                    
-
+                    bottom = Side.generate()
+                                
                 piece = Piece(right, bottom, left, top, id=ids[counter])
                 grid[i][j] = piece.id
-                #self.pieces.append(piece)
                 self.pieces_dict[piece.id] = piece
                 counter += 1
 
         self.solution = grid
-        #random.shuffle(self.pieces)
         shuffled = grid.flatten()
         np.random.shuffle(shuffled)
         self.grid = np.reshape(shuffled, self.size)
+        
+        # random pieces orientation
+        p0 = self.pieces_dict[0]
+        p0.orientation = 1
+        #for piece in self.pieces_dict.values():
+         #   piece.orientation = np.random.randint(0, 4)
         
     # calculate mean error between random pieces
     def getRandomError(self, iterations):
@@ -372,13 +356,14 @@ class Puzzle:
         print(f'samples: {len(errors)}, mean: {np.mean(errors)}, std: {np.std(errors)}')
 
 class State:
-    def __init__(self, grid, remaining, error, next):
+    def __init__(self, grid, grid_orientations, remaining, error, next):
         self.grid = grid
+        self.grid_orientations = grid_orientations
         self.remaining = remaining # set of piece ids
-        self.next_candidates = np.array(list(remaining), dtype=np.uint32) # ordered list of best matching pieces to try
+        self.next_candidates = np.array([(p_id, orientation) for p_id in remaining for orientation in [0, 1, 2, 3]]) # ordered list of best matching pieces to try
         self.error = error
         self.next = next # linear index in grid where to place next piece
-        self.errors = np.zeros(len(remaining))
+        self.errors = np.zeros(len(self.next_candidates))
         
    
 class Solver:
@@ -391,13 +376,14 @@ class Solver:
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
         n, m = self.puzzle.size
-        # state is defined as grid of placed pieces, and list of pieces to place
+        # state is defined as grid of placed pieces, and list of pieces still to be placed
         # total error is the sum of all side matching errors
         state = State(
             grid = np.zeros((n, m), dtype=np.uint32), # empty grid
+            grid_orientations = np.zeros((n, m), dtype=np.uint32), # empty
             remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces remaining to be placed
             error = 0.0,
-            next = 0 # indicates up to which position in grid the puzzle is filled
+            next = 0, # indicates up to which position in grid the puzzle is filled
             )
         best_error = float('inf')
         best_solution = state
@@ -413,7 +399,6 @@ class Solver:
             
             # prune
             if state.error >= best_error:
-                #print("PRUNED")
                 level = state.next
                 continue
                
@@ -421,10 +406,11 @@ class Solver:
             if len(state.remaining) == 0:
                 print(f"Local solution found, error: {state.error}")
                 if state.error < self.abortThreshold:
-                    return state.grid
+                    return state.grid, state.grid_orientations
                     
                 best_error = state.error
                 best_solution = state
+                continue
             
             # branch
             state = self.heuristic(state) # order pieces before exploring
@@ -442,14 +428,17 @@ class Solver:
             
             
             i, j = divmod(state.next, m)
-            for index, candidate_id in enumerate(state.next_candidates):
+            for index, (candidate_id, orientation) in enumerate(state.next_candidates):
                                 
                 grid = state.grid.copy()
                 grid[i][j] = candidate_id
+                grid_orientations = state.grid_orientations.copy()
+                grid_orientations[i][j] = orientation
                 remaining = state.remaining.copy()
                 remaining.remove(candidate_id)
                 new_state = State(
                     grid = grid,
+                    grid_orientations = grid_orientations,
                     remaining = remaining,
                     error = new_errors[index],
                     next = state.next + 1
@@ -458,18 +447,21 @@ class Solver:
                 queue.append(new_state)
         
         print(f"Globally optimal solution found with error: {best_error}")
-        print(best_solution.grid)
+        #print(best_solution.grid)
         
-        return best_solution.grid
+        return best_solution.grid, best_solution.grid_orientations
     
     
     # sort remaining pieces by error
     def heuristic(self, state):
         n, m = self.puzzle.size
+        
         # describe missing piece
         i, j = divmod(state.next, m)
-        left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right.copy() if j > 0 else Side.flat()
-        top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom.copy() if i > 0 else Side.flat()
+        self.puzzle.pieces_dict[state.grid[i][j - 1]].orientation = state.grid_orientations[i][j - 1]
+        left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right().copy() if j > 0 else Side.flat()
+        self.puzzle.pieces_dict[state.grid[i - 1][j]].orientation = state.grid_orientations[i - 1][j]
+        top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom().copy() if i > 0 else Side.flat()
         right = Side.unspecified() if j < m - 1 else Side.flat()
         bottom = Side.unspecified() if i < n - 1 else Side.flat()
 
@@ -481,9 +473,9 @@ class Solver:
         )
         
         # calculate errors
-        for index, candidate_id in enumerate(state.next_candidates):
+        for index, (candidate_id, orientation) in enumerate(state.next_candidates):
             candidate = self.puzzle.pieces_dict[candidate_id]
-            state.errors[index] = placeholder.distance(candidate)
+            state.errors[index] = placeholder.distance(candidate, orientation)
             
         # prune using error threshold
         mask = state.errors <= self.randomErrorThreshold
@@ -505,69 +497,6 @@ class Solver:
         
         return state
     
-    
-    # find locally optimal solution, may fail to solve puzzle
-    def solve(self):
-        n, m = self.puzzle.size
-        grid = [[None for _ in range(m)] for _ in range(n)]
-
-        # Pick a valid starting piece: top-left corner (no top, no left)
-        for i, piece in enumerate(self.puzzle.pieces):
-            if piece.top.kind == 'flat' and piece.left.kind == 'flat':
-                start_piece = self.puzzle.pieces.pop(i)
-                #print(start_piece.id)
-                break
-        else:
-            raise ValueError("No valid starting piece found")
-
-        grid[0][0] = start_piece
-
-        for i in range(n):
-            for j in range(m):
-                if grid[i][j]:
-                    continue
-                
-                left = grid[i][j - 1].right.copy() if j > 0 else Side.flat()
-                top = grid[i - 1][j].bottom.copy() if i > 0 else Side.flat()
-                
-                right = Side.unspecified() if j < m - 1 else Side.flat()
-                bottom = Side.unspecified() if i < n - 1 else Side.flat()
-
-                placeholder = Piece(
-                    right,
-                    bottom,
-                    left,
-                    top
-                )
-                
-                match, err = self.findBestMatch(placeholder)
-                print(f'piece {match.id} matched at {i, j} with error: {err}')
-                grid[i][j] = match
-                
-        self.puzzle.grid = grid
-    
-    # find best matching piece
-    def findBestMatch(self, piece):
-        best_idx = None
-        min_error = float('inf')
-
-        for i, candidate in enumerate(self.puzzle.pieces):
-            total_error = \
-                piece.left.distance(candidate.left) + \
-                piece.right.distance(candidate.right) + \
-                piece.top.distance(candidate.top) + \
-                piece.bottom.distance(andidate.bottom)
-                
-            if total_error < min_error:
-                best_idx = i
-                min_error = total_error
-                
-        if best_idx is None or total_error == float('inf'):
-            raise ValueError("No suitable match found")
-        
-        return self.puzzle.pieces.pop(best_idx), total_error
-        
-        
 
 
 
@@ -580,23 +509,36 @@ if __name__ == "__main__":
     vis = Visualizer()
     
     
-    n, m = 17, 17
+    n, m = 5, 5
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
+ 
     #print(puzzle.getRandomError(10000))
     #exit()
     
     #vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
-    #solver.solve()
-    puzzle.grid = solver.branchAndBound()
+    grid, orientations = solver.branchAndBound()
     
-    # check solution
+    # print(grid)
+    # print(orientations)
+    # print(puzzle.solution)
+    
+    # check solution (rotation invariant)
+    if np.array_equal(grid, puzzle.solution) \
+        or np.array_equal(grid, np.rot90(puzzle.solution, k=1)) \
+        or np.array_equal(grid, np.rot90(puzzle.solution, k=2)) \
+        or np.array_equal(grid, np.rot90(puzzle.solution, k=3)):
+        
+        print('Solution valid')
+    
+    
+    puzzle.grid = grid
     for i in range(n):
         for j in range(m):
-            assert(puzzle.grid[i, j] == puzzle.solution[i, j])
+            piece = puzzle.pieces_dict[puzzle.grid[i][j]]
+            piece.orientation = orientations[i][j]
     
-    print('Solution valid')
     vis.showPuzzle(puzzle)
