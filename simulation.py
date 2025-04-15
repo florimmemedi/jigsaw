@@ -5,6 +5,7 @@ import matplotlib.patches as patches
 
 import random
 import math
+import heapq
 
 import numpy as np
 import scipy
@@ -381,7 +382,15 @@ class State:
         self.error = error
         self.next = next # linear index in grid where to place next piece
         self.errors = np.zeros(len(self.next_candidates))
-   
+        
+    # use < between states for priority queue DFS
+    def __lt__(self, other):
+        # use expected error
+        val = 4 * 0.00042 # TODO: replace hard-coded values by getRandomMatchError
+        e0 = len(self.remaining) * val
+        e1 = len(other.remaining) * val
+        return self.error + e0 < other.error + e1
+    
 class Solver:
     def __init__(self, puzzle: Puzzle):
         self.puzzle = puzzle
@@ -407,15 +416,17 @@ class Solver:
             )
         best_error = float('inf')
         best_solution = state
-                
+        
         # logging info
         states_explored = 0
         
-        queue = [state]
+        queue = []
+        heapq.heappush(queue, state)
         
         while queue:
-            state = queue.pop() # use as stack -> DFS
+            state = heapq.heappop(queue)
             
+            states_explored += 1
             print(f'\rExplored: {states_explored}', end='')
             
             
@@ -433,14 +444,34 @@ class Solver:
                 best_solution = state
                 continue
             
-            # branch
-            state = self.heuristic(state) # order pieces before exploring
+            # describe missing piece
+            i, j = divmod(state.next, m)
+            self.grid_counter[i, j] += 1
+            self.puzzle.pieces_dict[state.grid[i][j - 1]].orientation = state.grid_orientations[i][j - 1]
+            left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right().copy() if j > 0 else Side.flat()
+            self.puzzle.pieces_dict[state.grid[i - 1][j]].orientation = state.grid_orientations[i - 1][j]
+            top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom().copy() if i > 0 else Side.flat()
+            right = Side.unspecified() if j < m - 1 else Side.flat()
+            bottom = Side.unspecified() if i < n - 1 else Side.flat()
 
-            # use descending order to allow DFS
-            state.errors = state.errors[::-1]
-            state.next_candidates = state.next_candidates[::-1]
+            placeholder = Piece(
+                right,
+                bottom,
+                left,
+                top
+            )
             
-            # prune
+            # calculate errors
+            for index, (candidate_id, orientation) in enumerate(state.next_candidates):
+                candidate = self.puzzle.pieces_dict[candidate_id]
+                state.errors[index] = placeholder.distance(candidate, orientation)
+            
+            # prune inf errors
+            mask = state.errors != np.inf
+            state.errors = state.errors[mask]
+            state.next_candidates = state.next_candidates[mask]
+            
+            # prune worse paths
             new_errors = state.errors + state.error
             mask = new_errors < best_error
             state.errors = state.errors[mask]
@@ -463,61 +494,12 @@ class Solver:
                     error = new_errors[index],
                     next = state.next + 1
                 )
-                states_explored += 1
-                queue.append(new_state)
+                
+                heapq.heappush(queue, new_state)
         
         print(f"\nGlobally optimal solution found with error: {best_error}")        
         return best_solution.grid, best_solution.grid_orientations
     
-    
-    # sort remaining pieces by error
-    def heuristic(self, state):
-        n, m = self.puzzle.size
-        
-        # describe missing piece
-        i, j = divmod(state.next, m)
-        self.grid_counter[i, j] += 1
-        self.puzzle.pieces_dict[state.grid[i][j - 1]].orientation = state.grid_orientations[i][j - 1]
-        left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right().copy() if j > 0 else Side.flat()
-        self.puzzle.pieces_dict[state.grid[i - 1][j]].orientation = state.grid_orientations[i - 1][j]
-        top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom().copy() if i > 0 else Side.flat()
-        right = Side.unspecified() if j < m - 1 else Side.flat()
-        bottom = Side.unspecified() if i < n - 1 else Side.flat()
-
-        placeholder = Piece(
-            right,
-            bottom,
-            left,
-            top
-        )
-        
-        # calculate errors
-        for index, (candidate_id, orientation) in enumerate(state.next_candidates):
-            candidate = self.puzzle.pieces_dict[candidate_id]
-            state.errors[index] = placeholder.distance(candidate, orientation)
-            
-        # prune using error threshold -> no global solution anymore!
-        # mask = state.errors <= self.randomErrorThreshold
-        # state.errors = state.errors[mask]
-        # state.next_candidates = state.next_candidates[mask]
-        
-        
-        # prune inf errors
-        mask = state.errors != np.inf
-        state.errors = state.errors[mask]
-        state.next_candidates = state.next_candidates[mask]
-        
-        # sort according to error
-        idx = np.argsort(state.errors)
-        state.errors = state.errors[idx]
-        state.next_candidates = state.next_candidates[idx]
-        #print(state.errors, state.next_candidates, state.remaining)
-        
-        
-        return state
-    
-
-
 
 if __name__ == "__main__":
     
