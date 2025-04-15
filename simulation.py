@@ -389,8 +389,8 @@ class Solver:
         n, m = puzzle.size
         
         mean, std = self.puzzle.getRandomMatchError(1000)
-        self.randomErrorThreshold = 0.00001#4* (mean + std) # per piece error threshold, set to 0 for perfect matching
-        self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded optimal and search aborted
+        self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
+        self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
         
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
@@ -492,12 +492,12 @@ class Solver:
             candidate = self.puzzle.pieces_dict[candidate_id]
             state.errors[index] = placeholder.distance(candidate, orientation)
             
-        # prune using error threshold
-        mask = state.errors <= self.randomErrorThreshold
-        state.errors = state.errors[mask]
-        state.next_candidates = state.next_candidates[mask]
-            
-            
+        # prune using error threshold -> no global solution anymore!
+        # mask = state.errors <= self.randomErrorThreshold
+        # state.errors = state.errors[mask]
+        # state.next_candidates = state.next_candidates[mask]
+        
+        
         # prune inf errors
         mask = state.errors != np.inf
         state.errors = state.errors[mask]
