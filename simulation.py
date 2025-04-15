@@ -1,11 +1,11 @@
 # Simulated Puzzle to solve
 
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 import random
 import math
+
 import numpy as np
 import scipy
 
@@ -172,7 +172,7 @@ class Side:
             return Side(None, self.male, self.kind)
             
         # small perturbations
-        delta_e = 0.02
+        delta_e = 0.1
         projective = {
             "scale_x": 1.0,
             "shear_x": np.random.uniform(-delta_e, delta_e),
@@ -249,8 +249,8 @@ class Side:
         if self.spline is None or other.spline is None:
             return float('inf')
         
-        # L2 distance
-        distances = np.linalg.norm(self.spline - other.spline, axis=1)
+        # squared L2 distance
+        distances = np.sum((self.spline - other.spline)**2, axis=1)
         return np.mean(distances) / 4.0
                 
   
@@ -381,7 +381,6 @@ class State:
         self.error = error
         self.next = next # linear index in grid where to place next piece
         self.errors = np.zeros(len(self.next_candidates))
-        
    
 class Solver:
     def __init__(self, puzzle: Puzzle):
@@ -391,6 +390,8 @@ class Solver:
         mean, std = self.puzzle.getRandomMatchError(1000)
         self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
+        
+        self.grid_counter = np.zeros((n, m)) # count how many trys are needed per location during solving
         
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
@@ -406,7 +407,7 @@ class Solver:
             )
         best_error = float('inf')
         best_solution = state
-        
+                
         # logging info
         states_explored = 0
         
@@ -414,7 +415,9 @@ class Solver:
         
         while queue:
             state = queue.pop() # use as stack -> DFS
-            print(f'Explored: {states_explored}')
+            
+            print(f'\rExplored: {states_explored}', end='')
+            
             
             # prune
             if state.error >= best_error:
@@ -422,7 +425,7 @@ class Solver:
                
             # found valid solution
             if len(state.remaining) == 0:
-                print(f"Local solution found, error: {state.error}")
+                print(f"\nLocal solution found, error: {state.error}")
                 if state.error < self.abortThreshold:
                     return state.grid, state.grid_orientations
                     
@@ -463,7 +466,7 @@ class Solver:
                 states_explored += 1
                 queue.append(new_state)
         
-        print(f"Globally optimal solution found with error: {best_error}")        
+        print(f"\nGlobally optimal solution found with error: {best_error}")        
         return best_solution.grid, best_solution.grid_orientations
     
     
@@ -473,6 +476,7 @@ class Solver:
         
         # describe missing piece
         i, j = divmod(state.next, m)
+        self.grid_counter[i, j] += 1
         self.puzzle.pieces_dict[state.grid[i][j - 1]].orientation = state.grid_orientations[i][j - 1]
         left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right().copy() if j > 0 else Side.flat()
         self.puzzle.pieces_dict[state.grid[i - 1][j]].orientation = state.grid_orientations[i - 1][j]
@@ -537,6 +541,7 @@ if __name__ == "__main__":
 
     solver = Solver(puzzle)
     grid, orientations = solver.branchAndBound()
+    print(solver.grid_counter)
     
     # print(grid)
     # print(orientations)
@@ -549,6 +554,8 @@ if __name__ == "__main__":
         or np.array_equal(grid, np.rot90(puzzle.solution, k=3)):
         
         print('Solution valid')
+    else:
+        print('Solution INVALID!')
     
     
     puzzle.grid = grid
