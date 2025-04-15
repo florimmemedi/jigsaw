@@ -6,6 +6,7 @@ import matplotlib.patches as patches
 import random
 import math
 import heapq
+from functools import lru_cache
 
 import numpy as np
 import scipy
@@ -173,7 +174,7 @@ class Side:
             return Side(None, self.male, self.kind)
             
         # small perturbations
-        delta_e = 0.1
+        delta_e = 0.02
         projective = {
             "scale_x": 1.0,
             "shear_x": np.random.uniform(-delta_e, delta_e),
@@ -341,37 +342,44 @@ class Puzzle:
         #for piece in self.pieces_dict.values():
          #   piece.orientation = np.random.randint(0, 4)
     
-    # error between randomly generated, matching sides
-    # helps to set error thresholds for early abortion during puzzle solving
-    def getRandomMatchError(self, iterations):
-        errors = np.zeros(iterations)
-        for i in range(iterations):
-            s0 = Side.generate()
-            s1 = s0.copy()
-            
-            s0.male = True
-            s1.male = False
-            
-            errors[i] = s0.distance(s1)
-        
-        mean = np.mean(errors)
-        std = np.std(errors)
-        print(f'RandomMatchError: samples: {len(errors)}, mean: {mean}, std: {std}')
-        return mean, std
     
-    # calculate errors between randomly generated splines
-    def getRandomError(self, iterations):
-        errors = np.zeros(iterations)
-        for i in range(iterations):
-            s0 = Side.generate()
-            s1 = Side.generate()
-            
-            s0.male = True
-            s1.male = False
-            
-            errors[i] = s0.distance(s1)
-            
-        print(f'RandomError: samples: {len(errors)}, mean: {np.mean(errors)}, std: {np.std(errors)}')
+# error between randomly generated, matching sides
+# helps to set error thresholds for early abortion during puzzle solving
+@lru_cache
+def getRandomMatchError(iterations = 1000):
+    errors = np.zeros(iterations)
+    for i in range(iterations):
+        s0 = Side.generate()
+        s1 = s0.copy()
+        
+        s0.male = True
+        s1.male = False
+        
+        errors[i] = s0.distance(s1)
+    
+    mean = np.mean(errors)
+    std = np.std(errors)
+    print(f'RandomMatchError: samples: {len(errors)}, mean: {mean}, std: {std}')
+    return mean, std
+    
+
+# calculate errors between randomly generated splines
+@lru_cache
+def getRandomError(iterations):
+    errors = np.zeros(iterations)
+    for i in range(iterations):
+        s0 = Side.generate()
+        s1 = Side.generate()
+        
+        s0.male = True
+        s1.male = False
+        
+        errors[i] = s0.distance(s1)
+        
+    mean = np.mean(errors)
+    std = np.std(errors)
+    print(f'RandomError: samples: {len(errors)}, mean: {mean}, std: {std}')
+    return mean, std
 
 class State:
     def __init__(self, grid, grid_orientations, remaining, error, next):
@@ -386,7 +394,8 @@ class State:
     # use < between states for priority queue DFS
     def __lt__(self, other):
         # use expected error
-        val = 4 * 0.00042 # TODO: replace hard-coded values by getRandomMatchError
+        mean, std = getRandomMatchError(1000)
+        val = 4 * mean
         e0 = len(self.remaining) * val
         e1 = len(other.remaining) * val
         return self.error + e0 < other.error + e1
@@ -396,7 +405,7 @@ class Solver:
         self.puzzle = puzzle
         n, m = puzzle.size
         
-        mean, std = self.puzzle.getRandomMatchError(1000)
+        mean, std = getRandomMatchError(1000)
         self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
         
@@ -506,17 +515,14 @@ if __name__ == "__main__":
     random.seed(42)
     np.random.seed(42)
     
-   
     vis = Visualizer()
     
-    
-    n, m = 5, 5
+    n, m = 6,6
     puzzle = Puzzle(n, m)
     puzzle.generate()
     
- 
-    #puzzle.getRandomError(1000)
-    #puzzle.getRandomMatchError(1000)
+    #getRandomError(1000)
+    #getRandomMatchError(1000)
     #exit()
     
     #vis.showPuzzle(puzzle)
