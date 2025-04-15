@@ -417,11 +417,11 @@ class Solver:
         # state is defined as grid of placed pieces, and list of pieces still to be placed
         # total error is the sum of all side matching errors
         state = State(
-            grid = np.zeros((n, m), dtype=np.uint32), # empty grid
+            grid = np.ones((n, m), dtype=np.int32) * (-1), # empty grid is negative
             grid_orientations = np.zeros((n, m), dtype=np.uint32), # empty
             remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces remaining to be placed
             error = 0.0,
-            next = 0, # indicates up to which position in grid the puzzle is filled
+            next = 0, # start with top left
             )
         best_error = float('inf')
         best_solution = state
@@ -456,12 +456,50 @@ class Solver:
             # describe missing piece
             i, j = divmod(state.next, m)
             self.grid_counter[i, j] += 1
-            self.puzzle.pieces_dict[state.grid[i][j - 1]].orientation = state.grid_orientations[i][j - 1]
-            left = self.puzzle.pieces_dict[state.grid[i][j - 1]].right().copy() if j > 0 else Side.flat()
-            self.puzzle.pieces_dict[state.grid[i - 1][j]].orientation = state.grid_orientations[i - 1][j]
-            top = self.puzzle.pieces_dict[state.grid[i - 1][j]].bottom().copy() if i > 0 else Side.flat()
-            right = Side.unspecified() if j < m - 1 else Side.flat()
-            bottom = Side.unspecified() if i < n - 1 else Side.flat()
+            
+            if j == 0:
+                left = Side.flat()
+            else:
+                neighbor_id = state.grid[i][j - 1]
+                if neighbor_id < 0:
+                    left = Side.unspecified()
+                else:
+                    piece = self.puzzle.pieces_dict[neighbor_id]
+                    piece.orientation = state.grid_orientations[i][j - 1]
+                    left = piece.right().copy()
+            
+            if i == 0:
+                top = Side.flat()
+            else:
+                neighbor_id = state.grid[i - 1][j]
+                if neighbor_id < 0:
+                    top = Side.unspecified()
+                else:
+                    piece = self.puzzle.pieces_dict[neighbor_id]
+                    piece.orientation = state.grid_orientations[i - 1][j]
+                    top = piece.bottom().copy()
+            
+            if j == m - 1:
+                right = Side.flat()
+            else:
+                neighbor_id = state.grid[i][j + 1]
+                if neighbor_id < 0:
+                    right = Side.unspecified()
+                else:
+                    piece = self.puzzle.pieces_dict[neighbor_id]
+                    piece.orientation = state.grid_orientations[i][j + 1]
+                    right = piece.left().copy()
+            
+            if i == n - 1:
+                bottom = Side.flat()
+            else:
+                neighbor_id = state.grid[i + 1][j]
+                if neighbor_id < 0:
+                    bottom = Side.unspecified()
+                else:
+                    piece = self.puzzle.pieces_dict[neighbor_id]
+                    piece.orientation = state.grid_orientations[i + 1][j]
+                    bottom = piece.top().copy()
 
             placeholder = Piece(
                 right,
@@ -495,13 +533,18 @@ class Solver:
                 grid_orientations = state.grid_orientations.copy()
                 grid_orientations[i][j] = orientation
                 remaining = state.remaining.copy()
-                remaining.remove(candidate_id)
+                remaining.remove(candidate_id)          
+                
+                # index of first remaining negative element in grid
+                neg_indices = np.flatnonzero(grid < 0)
+                next = neg_indices[0] if len(neg_indices) > 0 else None
+                
                 new_state = State(
                     grid = grid,
                     grid_orientations = grid_orientations,
                     remaining = remaining,
                     error = new_errors[index],
-                    next = state.next + 1
+                    next = next
                 )
                 
                 heapq.heappush(queue, new_state)
@@ -531,9 +574,9 @@ if __name__ == "__main__":
     grid, orientations = solver.branchAndBound()
     print(solver.grid_counter)
     
-    # print(grid)
-    # print(orientations)
-    # print(puzzle.solution)
+    #print(grid)
+    #print(orientations)
+    #print(puzzle.solution)
     
     # check solution (rotation invariant)
     if np.array_equal(grid, puzzle.solution) \
