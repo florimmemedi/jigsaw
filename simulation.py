@@ -339,21 +339,38 @@ class Puzzle:
         p0.orientation = 1
         #for piece in self.pieces_dict.values():
          #   piece.orientation = np.random.randint(0, 4)
-        
-    # calculate mean error between random pieces
-    def getRandomError(self, iterations):
-        n, m = self.size
-        idxs = np.random.randint(0, n*m, 2*iterations)
-        errors = []
+    
+    # error between randomly generated, matching sides
+    # helps to set error thresholds for early abortion during puzzle solving
+    def getRandomMatchError(self, iterations):
+        errors = np.zeros(iterations)
         for i in range(iterations):
-            piece1 = self.pieces_dict[idxs[2*i]]
-            piece2 = self.pieces_dict[idxs[2*i + 1]]
+            s0 = Side.generate()
+            s1 = s0.copy()
             
-            error = piece1.distance(piece2)
-            if error != float('inf'):
-                errors.append(error)
-                
-        print(f'samples: {len(errors)}, mean: {np.mean(errors)}, std: {np.std(errors)}')
+            s0.male = True
+            s1.male = False
+            
+            errors[i] = s0.distance(s1)
+        
+        mean = np.mean(errors)
+        std = np.std(errors)
+        print(f'RandomMatchError: samples: {len(errors)}, mean: {mean}, std: {std}')
+        return mean, std
+    
+    # calculate errors between randomly generated splines
+    def getRandomError(self, iterations):
+        errors = np.zeros(iterations)
+        for i in range(iterations):
+            s0 = Side.generate()
+            s1 = Side.generate()
+            
+            s0.male = True
+            s1.male = False
+            
+            errors[i] = s0.distance(s1)
+            
+        print(f'RandomError: samples: {len(errors)}, mean: {np.mean(errors)}, std: {np.std(errors)}')
 
 class State:
     def __init__(self, grid, grid_orientations, remaining, error, next):
@@ -370,7 +387,9 @@ class Solver:
     def __init__(self, puzzle: Puzzle):
         self.puzzle = puzzle
         n, m = puzzle.size
-        self.randomErrorThreshold = 0.1 # per piece error threshold, set to 0 for perfect matching, gather sensible values from puzzle.getRandomError()
+        
+        mean, std = self.puzzle.getRandomMatchError(1000)
+        self.randomErrorThreshold = 0.00001#4* (mean + std) # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded optimal and search aborted
         
     # find globally optimal solution (NP-hard)
@@ -399,7 +418,6 @@ class Solver:
             
             # prune
             if state.error >= best_error:
-                level = state.next
                 continue
                
             # found valid solution
@@ -422,7 +440,6 @@ class Solver:
             # prune
             new_errors = state.errors + state.error
             mask = new_errors < best_error
-            level = state.next
             state.errors = state.errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
@@ -446,9 +463,7 @@ class Solver:
                 states_explored += 1
                 queue.append(new_state)
         
-        print(f"Globally optimal solution found with error: {best_error}")
-        #print(best_solution.grid)
-        
+        print(f"Globally optimal solution found with error: {best_error}")        
         return best_solution.grid, best_solution.grid_orientations
     
     
@@ -514,7 +529,8 @@ if __name__ == "__main__":
     puzzle.generate()
     
  
-    #print(puzzle.getRandomError(10000))
+    #puzzle.getRandomError(1000)
+    #puzzle.getRandomMatchError(1000)
     #exit()
     
     #vis.showPuzzle(puzzle)
