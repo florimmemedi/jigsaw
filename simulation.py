@@ -15,7 +15,8 @@ class Visualizer:
 
     def showPuzzle(self, puzzle):
         n, m = puzzle.size
-        fig, ax = plt.subplots()
+        scale = 2  # inches per cell
+        fig, ax = plt.subplots(figsize=(m * scale, n * scale))
         ax.set_aspect('equal')
         ax.set_xlim(0, m * self.cell_size)
         ax.set_ylim(0, n * self.cell_size)
@@ -48,8 +49,7 @@ class Visualizer:
         self.draw_side(ax, x, y + cs/2, piece.left(), 'left')
         
         # Draw piece ID in the center
-        ax.text(x + cs / 2, y + cs / 2, f'{str(piece.id)} ({str(piece.orientation)})',
-                ha='center', va='center', fontsize=8, color='black')
+        #ax.text(x + cs / 2, y + cs / 2, f'{str(piece.id)} ({str(piece.orientation)})', ha='center', va='center', fontsize=8, color='black')
 
     def draw_side(self, ax, x_data, y_data, side, position):
         if not side:
