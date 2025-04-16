@@ -6,6 +6,7 @@ import matplotlib.patches as patches
 import random
 import math
 import heapq
+import time
 from functools import lru_cache
 
 import numpy as np
@@ -280,22 +281,19 @@ class Piece:
             side.male = not side.male
         
     # calculate matching error
-    def distance(self, other, orientation = 0):
+    def distance(self, other, orientation = 0):        
         rotated = other.sides[-orientation:] + other.sides[:-orientation]
         return sum([side.distance(other_side) for side, other_side in zip(self.sides, rotated)])
         
         
 class Puzzle:
+    # generate random puzzle
     def __init__(self, n, m):
-        assert(n*m < 2**32) # uint32 for ids
+        assert(n*m < 2**31 - 1) # int32 for ids
         self.size = (n, m)
-        self.grid = [[None for _ in range(m)] for _ in range(n)]
-        self.pieces_dict = {}
-        self.solution = [[]]
-
-    def generate(self):
-        n, m = self.size
+        
         grid = np.zeros((n, m), dtype=np.uint32)
+        self.pieces_dict = {}
         # random ids for pieces
         ids = np.arange(n*m)
         np.random.shuffle(ids)
@@ -305,7 +303,6 @@ class Puzzle:
             for j in range(m):
                 left = Side.flat()
                 top = Side.flat()
-                    
                 
                 # match left neighbor's right
                 if j > 0:
@@ -337,10 +334,8 @@ class Puzzle:
         self.grid = np.reshape(shuffled, self.size)
         
         # random pieces orientation
-        p0 = self.pieces_dict[0]
-        p0.orientation = 1
-        #for piece in self.pieces_dict.values():
-         #   piece.orientation = np.random.randint(0, 4)
+        for piece in self.pieces_dict.values():
+           piece.orientation = np.random.randint(0, 4)
     
     
 # error between randomly generated, matching sides
@@ -394,7 +389,7 @@ class State:
     # use < between states for priority queue DFS
     def __lt__(self, other):
         # use expected error
-        mean, std = getRandomMatchError(1000)
+        mean, std = getRandomMatchError()
         val = 4 * mean
         e0 = len(self.remaining) * val
         e1 = len(other.remaining) * val
@@ -405,28 +400,119 @@ class Solver:
         self.puzzle = puzzle
         n, m = puzzle.size
         
-        mean, std = getRandomMatchError(1000)
+        mean, std = getRandomMatchError()
         self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
         
         # grid holds ids of already placed pieces, negative values indicate preferred order of placing next missin piece. more neg = place first
+        # example 10x10 with constant interior:
+        # [[-34  -2  -3  -4  -5  -6  -7  -8  -9 -34]
+        #  [-33  -1  -1  -1  -1  -1  -1  -1  -1 -10]
+        #  [-32  -1  -1  -1  -1  -1  -1  -1  -1 -11]
+        #  [-31  -1  -1  -1  -1  -1  -1  -1  -1 -12]
+        #  [-30  -1  -1  -1  -1  -1  -1  -1  -1 -13]
+        #  [-29  -1  -1  -1  -1  -1  -1  -1  -1 -14]
+        #  [-28  -1  -1  -1  -1  -1  -1  -1  -1 -15]
+        #  [-27  -1  -1  -1  -1  -1  -1  -1  -1 -16]
+        #  [-26  -1  -1  -1  -1  -1  -1  -1  -1 -17]
+        #  [-34 -25 -24 -23 -22 -21 -20 -19 -18 -34]]
+        # example 10x10 total order:
+        # [[-97 -65 -66 -67 -68 -69 -70 -71 -72 -97]
+        #  [-96 -64 -63 -62 -61 -60 -59 -58 -57 -73]
+        #  [-95 -56 -55 -54 -53 -52 -51 -50 -49 -74]
+        #  [-94 -48 -47 -46 -45 -44 -43 -42 -41 -75]
+        #  [-93 -40 -39 -38 -37 -36 -35 -34 -33 -76]
+        #  [-92 -32 -31 -30 -29 -28 -27 -26 -25 -77]
+        #  [-91 -24 -23 -22 -21 -20 -19 -18 -17 -78]
+        #  [-90 -16 -15 -14 -13 -12 -11 -10  -9 -79]
+        #  [-89  -8  -7  -6  -5  -4  -3  -2  -1 -80]
+        #  [-97 -88 -87 -86 -85 -84 -83 -82 -81 -97]]
+        
         self.initialGrid = np.full((n, m), -1, dtype=np.int32)
 
-        # Set all edges to -2
-        self.initialGrid[0, :] = -2
-        self.initialGrid[-1, :] = -2
-        self.initialGrid[:, 0] = -2
-        self.initialGrid[:, -1] = -2
+        # Define interior dimensions
+        height = n - 2
+        width = m - 2
 
-        # Set corners to -3 (they overwrite the -2s)
-        self.initialGrid[0, 0] = -3
-        self.initialGrid[0, -1] = -3
-        self.initialGrid[-1, 0] = -3
-        self.initialGrid[-1, -1] = -3
+        # Fill interior (row-wise decreasing)
+        interior = np.arange(-height * width, 0).reshape((height, width))
+        self.initialGrid[1:-1, 1:-1] = interior
 
-        
+        # Fill edges clockwise (excluding corners)
+        counter = self.initialGrid.min() - 1
+        self.initialGrid[0, 1:-1]        = np.arange(counter, counter - width, -1); counter -= width
+        self.initialGrid[1:-1, -1]       = np.arange(counter, counter - height, -1); counter -= height
+        self.initialGrid[-1, -2:0:-1]    = np.arange(counter, counter - width, -1); counter -= width
+        self.initialGrid[-2:0:-1, 0]     = np.arange(counter, counter - height, -1); counter -= height
+
+        # Set all corners to min - 1
+        corner = self.initialGrid.min() - 1
+        self.initialGrid[0, 0] = corner
+        self.initialGrid[0, -1] = corner
+        self.initialGrid[-1, 0] = corner
+        self.initialGrid[-1, -1] = corner
+
+        # logging
         self.grid_counter = np.zeros((n, m)) # count how many trys are needed per location during solving
+    
+    # given linear grid index, return placeholder piece at this location (for later searching)
+    def describePiece(self, state, position):
+        i, j = divmod(position, m)
         
+        if j == 0:
+            left = Side.flat()
+        else:
+            neighbor_id = state.grid[i][j - 1]
+            if neighbor_id < 0:
+                left = Side.unspecified()
+            else:
+                piece = self.puzzle.pieces_dict[neighbor_id]
+                piece.orientation = state.grid_orientations[i][j - 1]
+                left = piece.right().copy()
+        
+        if i == 0:
+            top = Side.flat()
+        else:
+            neighbor_id = state.grid[i - 1][j]
+            if neighbor_id < 0:
+                top = Side.unspecified()
+            else:
+                piece = self.puzzle.pieces_dict[neighbor_id]
+                piece.orientation = state.grid_orientations[i - 1][j]
+                top = piece.bottom().copy()
+        
+        if j == m - 1:
+            right = Side.flat()
+        else:
+            neighbor_id = state.grid[i][j + 1]
+            if neighbor_id < 0:
+                right = Side.unspecified()
+            else:
+                piece = self.puzzle.pieces_dict[neighbor_id]
+                piece.orientation = state.grid_orientations[i][j + 1]
+                right = piece.left().copy()
+        
+        if i == n - 1:
+            bottom = Side.flat()
+        else:
+            neighbor_id = state.grid[i + 1][j]
+            if neighbor_id < 0:
+                bottom = Side.unspecified()
+            else:
+                piece = self.puzzle.pieces_dict[neighbor_id]
+                piece.orientation = state.grid_orientations[i + 1][j]
+                bottom = piece.top().copy()
+
+        placeholder = Piece(
+            right,
+            bottom,
+            left,
+            top
+        )
+        
+        return placeholder
+    
+    
     # find globally optimal solution (NP-hard)
     def branchAndBound(self):
         n, m = self.puzzle.size
@@ -468,60 +554,13 @@ class Solver:
                 best_solution = state
                 continue
             
-            # describe missing piece
+            # log progress
             i, j = divmod(state.next, m)
             self.grid_counter[i, j] += 1
             
-            if j == 0:
-                left = Side.flat()
-            else:
-                neighbor_id = state.grid[i][j - 1]
-                if neighbor_id < 0:
-                    left = Side.unspecified()
-                else:
-                    piece = self.puzzle.pieces_dict[neighbor_id]
-                    piece.orientation = state.grid_orientations[i][j - 1]
-                    left = piece.right().copy()
             
-            if i == 0:
-                top = Side.flat()
-            else:
-                neighbor_id = state.grid[i - 1][j]
-                if neighbor_id < 0:
-                    top = Side.unspecified()
-                else:
-                    piece = self.puzzle.pieces_dict[neighbor_id]
-                    piece.orientation = state.grid_orientations[i - 1][j]
-                    top = piece.bottom().copy()
-            
-            if j == m - 1:
-                right = Side.flat()
-            else:
-                neighbor_id = state.grid[i][j + 1]
-                if neighbor_id < 0:
-                    right = Side.unspecified()
-                else:
-                    piece = self.puzzle.pieces_dict[neighbor_id]
-                    piece.orientation = state.grid_orientations[i][j + 1]
-                    right = piece.left().copy()
-            
-            if i == n - 1:
-                bottom = Side.flat()
-            else:
-                neighbor_id = state.grid[i + 1][j]
-                if neighbor_id < 0:
-                    bottom = Side.unspecified()
-                else:
-                    piece = self.puzzle.pieces_dict[neighbor_id]
-                    piece.orientation = state.grid_orientations[i + 1][j]
-                    bottom = piece.top().copy()
-
-            placeholder = Piece(
-                right,
-                bottom,
-                left,
-                top
-            )
+            # describe missing piece
+            placeholder = self.describePiece(state, state.next)
             
             # calculate errors
             for index, (candidate_id, orientation) in enumerate(state.next_candidates):
@@ -539,7 +578,7 @@ class Solver:
             state.errors = state.errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
-            
+            # branch
             i, j = divmod(state.next, m)
             for index, (candidate_id, orientation) in enumerate(state.next_candidates):
                                 
@@ -566,23 +605,26 @@ class Solver:
 
 if __name__ == "__main__":
     
-    random.seed(42)
-    np.random.seed(42)
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
     
     vis = Visualizer()
     
-    n, m = 10, 10
+    n, m = 5, 5
     puzzle = Puzzle(n, m)
-    puzzle.generate()
     
-    #getRandomError(1000)
-    #getRandomMatchError(1000)
+    #getRandomError()
+    #getRandomMatchError()
     #exit()
     
     #vis.showPuzzle(puzzle)
 
     solver = Solver(puzzle)
+    start = time.perf_counter()
     grid, orientations = solver.branchAndBound()
+    end = time.perf_counter()
+    print(f"Took {end - start:.6f} seconds")
     print(solver.grid_counter)
     
     #print(grid)
@@ -606,4 +648,4 @@ if __name__ == "__main__":
             piece = puzzle.pieces_dict[puzzle.grid[i][j]]
             piece.orientation = orientations[i][j]
     
-    vis.showPuzzle(puzzle)
+    #vis.showPuzzle(puzzle)
