@@ -514,7 +514,7 @@ class Solver:
     
     
     # find globally optimal solution (NP-hard)
-    def branchAndBound(self):
+    def branchAndBound(self, verbose = False):
         n, m = self.puzzle.size
         
         state = State(
@@ -529,6 +529,7 @@ class Solver:
         
         # logging info
         states_explored = 0
+        is_local_solution = False
         
         queue = []
         heapq.heappush(queue, state)
@@ -537,7 +538,7 @@ class Solver:
             state = heapq.heappop(queue)
             
             states_explored += 1
-            print(f'\rExplored: {states_explored}', end='')
+            if verbose: print(f'\rExplored: {states_explored}', end='')
             
             
             # prune
@@ -546,12 +547,14 @@ class Solver:
                
             # found valid solution
             if len(state.remaining) == 0:
-                print(f"\nLocal solution found, error: {state.error:.5f}")
-                if state.error < self.abortThreshold:
-                    return state.grid, state.grid_orientations
-                    
                 best_error = state.error
                 best_solution = state
+                
+                if verbose: print(f"\nLocal solution found, error: {state.error:.5f}")
+                if state.error < self.abortThreshold:
+                    is_local_solution = True
+                    break
+                    
                 continue
             
             # log progress
@@ -599,9 +602,19 @@ class Solver:
                 
                 heapq.heappush(queue, new_state)
         
-        print(f"\nGlobally optimal solution found with error: {best_error:.5f}")        
-        return best_solution.grid, best_solution.grid_orientations
+        
+        if not is_local_solution:
+            if verbose: print(f"\nGlobally optimal solution found with error: {best_error:.5f}")
+        
+        stats = {"states_explored": states_explored, "is_local_solution": is_local_solution}
+        return best_solution.grid, best_solution.grid_orientations, stats
     
+# check grid agains puzzle solution (rotation invariant)
+def is_valid_solution(grid, solution):
+    return np.array_equal(grid, solution) \
+        or np.array_equal(grid, np.rot90(solution, k=1)) \
+        or np.array_equal(grid, np.rot90(solution, k=2)) \
+        or np.array_equal(grid, np.rot90(solution, k=3))
 
 if __name__ == "__main__":
     
@@ -611,36 +624,47 @@ if __name__ == "__main__":
     
     vis = Visualizer()
     
-    n, m = 5, 5
-    puzzle = Puzzle(n, m)
-    
     #getRandomError()
     #getRandomMatchError()
     #exit()
     
-    #vis.showPuzzle(puzzle)
+    
+    n, m = 10, 10
+    print(n, m)
+    
+    runtimes = []
+    states_explored = []
+    
+    for i in range(100):
+        print(i)
+        puzzle = Puzzle(n, m)
+    
+    
+        #vis.showPuzzle(puzzle)
 
-    solver = Solver(puzzle)
-    start = time.perf_counter()
-    grid, orientations = solver.branchAndBound()
-    end = time.perf_counter()
-    print(f"Took {end - start:.6f} seconds")
-    print(solver.grid_counter)
-    
-    #print(grid)
-    #print(orientations)
-    #print(puzzle.solution)
-    
-    # check solution (rotation invariant)
-    if np.array_equal(grid, puzzle.solution) \
-        or np.array_equal(grid, np.rot90(puzzle.solution, k=1)) \
-        or np.array_equal(grid, np.rot90(puzzle.solution, k=2)) \
-        or np.array_equal(grid, np.rot90(puzzle.solution, k=3)):
+        solver = Solver(puzzle)
+        start = time.perf_counter()
+        grid, orientations, stats = solver.branchAndBound()
+        end = time.perf_counter()
+        runtimes.append(end-start)
+        #print(f"Took {end - start:.6f} seconds")
         
-        print('Solution valid')
-    else:
-        print('Solution INVALID!')
+        assert(is_valid_solution(grid, puzzle.solution))
+        
+        states_explored.append(stats["states_explored"])
+        #print(stats)
+        
+        #print(solver.grid_counter)
+        
+        #print(grid)
+        #print(orientations)
+        #print(puzzle.solution)
     
+    #print(runtimes)
+    print(np.mean(runtimes))
+    print(states_explored)
+    print(np.mean(states_explored))
+    print(np.median(states_explored))
     
     puzzle.grid = grid
     for i in range(n):
