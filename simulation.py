@@ -2,6 +2,8 @@
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+plt.ion()  # turn on interactive mode
+import cv2
 
 import random
 import math
@@ -13,36 +15,152 @@ from functools import lru_cache
 import numpy as np
 import scipy
 
-def print_grid(grid):
+def print_grid(grid, states_explored = None):
     os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal
+    if states_explored is not None: print(f'\rExplored: {states_explored}')
     for row in grid:
         print(' '.join(f'{cell:3}' if cell >= 0 else '  .' for cell in row))
+        
+        
+class VisualizerCV:
+    def __init__(self, cell_size=64, upscale_factor=4):
+        self.cell_size = cell_size
+        self.upscale = upscale_factor
+        self.drawn_cells = set()
+
+    def showPuzzle(self, grid, orientations, pieces):
+        n, m = grid.shape
+        cs = self.cell_size * self.upscale
+        h, w = n * cs, m * cs
+        if not hasattr(self, 'canvas') or self.canvas.shape[:2] != (h, w):
+            self.canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+            self.drawn_cells.clear()
+
+        for i in range(n):
+            for j in range(m):
+                piece_id = grid[i, j]
+                if piece_id < 0:
+                    continue
+                if (i, j) in self.drawn_cells:
+                    continue
+                self.draw_piece(i, j, pieces[piece_id], orientations[i, j])
+                self.drawn_cells.add((i, j))
+
+        # Downscale for display
+        small = cv2.resize(self.canvas, (m * self.cell_size, n * self.cell_size), interpolation=cv2.INTER_AREA)
+        cv2.imshow("Puzzle", small)
+        cv2.waitKey(1)
+
+    def draw_piece(self, row, col, piece, orientation):
+        cs = self.cell_size * self.upscale
+        x = col * cs
+        y = row * cs
+
+        # Draw square
+        cv2.rectangle(self.canvas, (x, y), (x + cs, y + cs), (200, 200, 200), thickness=-1)
+        cv2.rectangle(self.canvas, (x, y), (x + cs, y + cs), (100, 100, 100), thickness=max(1, self.upscale))
+
+        # Draw piece ID in center
+        text = str(piece.id)
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+        text_x = x + (cs - text_size[0]) // 2
+        text_y = y + (cs + text_size[1]) // 2
+        cv2.putText(self.canvas, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * self.upscale, (0, 0, 0), max(1, self.upscale), lineType=cv2.LINE_AA)
+
+        # Draw sides
+        self.draw_side(x + cs//2, y, piece.top(orientation), 'top')
+        self.draw_side(x + cs, y + cs//2, piece.right(orientation), 'right')
+        self.draw_side(x + cs//2, y + cs, piece.bottom(orientation), 'bottom')
+        self.draw_side(x, y + cs//2, piece.left(orientation), 'left')
+
+    def draw_side(self, x_data, y_data, side, position):
+        if side.spline is None:
+            return
+
+        color_map = {
+            'top': (0, 0, 255),
+            'bottom': (255, 0, 0),
+            'left': (0, 255, 0),
+            'right': (0, 165, 255)
+        }
+        color = color_map.get(position, (0, 0, 0))
+
+        spline = side.spline.copy()
+        center_x = 0.5
+        spline[:, 0] = (spline[:, 0] - center_x) + center_x
+
+        cs = self.cell_size * self.upscale
+        spline[:, 0] *= cs
+        spline[:, 1] *= cs
+
+        if position in ['left', 'right']:
+            spline = spline[:, [1, 0]]
+
+        if not side.male:
+            if position in ['right']:
+                spline[:, 0] *= -1
+            if position in ['bottom']:
+                spline[:, 1] *= -1
+
+        if side.male:
+            if position in ['left']:
+                spline[:, 0] *= -1
+            if position in ['top']:
+                spline[:, 1] *= -1
+
+        if position == 'top':
+            offset = np.array([x_data - cs / 2, y_data])
+        elif position == 'bottom':
+            offset = np.array([x_data - cs / 2, y_data])
+        elif position == 'left':
+            offset = np.array([x_data, y_data - cs / 2])
+        elif position == 'right':
+            offset = np.array([x_data, y_data - cs / 2])
+        else:
+            offset = np.array([x_data, y_data])
+
+        spline += offset
+        pts = spline.reshape((-1, 1, 2)).astype(np.int32)
+        cv2.polylines(self.canvas, [pts], isClosed=False, color=color, thickness=max(2, self.upscale), lineType=cv2.LINE_AA)
+
+
 
 class Visualizer:
     def __init__(self, cell_size=1):
         self.cell_size = cell_size
+        self.drawn_cells = set()  # initialize once
 
-    def showPuzzle(self, puzzle):
-        n, m = puzzle.size
+    def showPuzzle(self, grid, orientations, pieces):
+        n, m = grid.shape
         scale = 2  # inches per cell
-        fig, ax = plt.subplots(figsize=(m * scale, n * scale))
+        
+        # Create a figure if none exists (allows incremental updates)
+        if not hasattr(self, 'fig') or not plt.fignum_exists(self.fig.number):
+            self.fig, self.ax = plt.subplots(figsize=(m * scale, n * scale))
+            
+        ax = self.ax
         ax.set_aspect('equal')
         ax.set_xlim(0, m * self.cell_size)
         ax.set_ylim(0, n * self.cell_size)
         ax.invert_yaxis()  # top-left origin
         ax.axis('off')
-
+        
         for i in range(n):
             for j in range(m):
-                piece_id = puzzle.grid[i][j]
-                self.draw_piece(ax, i, j, puzzle.pieces_dict[piece_id])
+                piece_id = grid[i,j]
+                
+                if piece_id < 0: continue
+                
+                if (i, j) in self.drawn_cells:
+                    continue  # already drawn
+                    
+                self.draw_piece(ax, i, j, pieces[piece_id], orientations[i, j])
+                self.drawn_cells.add((i, j))
 
-        plt.show()
+        #self.fig.canvas.draw()
+        #self.fig.canvas.flush_events()
 
-    def draw_piece(self, ax, row, col, piece):
-        #if piece.id != 1: return
-        #print(piece.right)
-        
+    def draw_piece(self, ax, row, col, piece, orientation):
         x = col * self.cell_size
         y = row * self.cell_size
         cs = self.cell_size
@@ -52,20 +170,17 @@ class Visualizer:
         ax.add_patch(rect)
 
         # Draw side indicators (text or small lines)
-        self.draw_side(ax, x + cs/2, y, piece.top(), 'top')
-        self.draw_side(ax, x + cs, y + cs/2, piece.right(), 'right')
-        self.draw_side(ax, x + cs/2, y + cs, piece.bottom(), 'bottom')
-        self.draw_side(ax, x, y + cs/2, piece.left(), 'left')
+        self.draw_side(ax, x + cs/2, y, piece.top(orientation), 'top')
+        self.draw_side(ax, x + cs, y + cs/2, piece.right(orientation), 'right')
+        self.draw_side(ax, x + cs/2, y + cs, piece.bottom(orientation), 'bottom')
+        self.draw_side(ax, x, y + cs/2, piece.left(orientation), 'left')
         
         # Draw piece ID in the center
         show_orientation = False
-        text = f'{str(piece.id)} ({str(piece.orientation)})' if show_orientation else f'{str(piece.id)}'
+        text = f'{str(piece.id)} ({str(orientation)})' if show_orientation else f'{str(piece.id)}'
         ax.text(x + cs / 2, y + cs / 2, text, ha='center', va='center', fontsize=8, color='black')
 
     def draw_side(self, ax, x_data, y_data, side, position):
-        if not side:
-            return
-            
         # Color by side
         side_colors = {
             'top': 'red',
@@ -183,14 +298,14 @@ class Side:
             return Side(None, self.male, self.kind)
             
         # small perturbations
-        delta_e = 0.02
+        delta_e = 0.0
         projective = {
-            "scale_x": 1.0,
-            "shear_x": np.random.uniform(-delta_e, delta_e),
             "translate_x": 0.0,
-            "shear_y": np.random.uniform(-delta_e, delta_e),
-            "scale_y": 1.0,
             "translate_y": 0.0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "shear_x": np.random.uniform(-delta_e, delta_e),
+            "shear_y": np.random.uniform(-delta_e, delta_e),
             "perspective_x": np.random.uniform(-delta_e, delta_e),
             "perspective_y": np.random.uniform(-delta_e, delta_e)
         }
@@ -269,20 +384,19 @@ class Side:
 class Piece:
     def __init__(self, right, bottom, left, top, id=None):
         self.sides = [right, bottom, left, top]
-        self.orientation = 0
         self.id = id
         
-    def right(self):
-        return self.sides[(self.orientation + 0) % 4]
+    def right(self, orientation):
+        return self.sides[(-orientation) % 4]
         
-    def bottom(self):
-        return self.sides[(self.orientation + 1) % 4]
+    def bottom(self, orientation):
+        return self.sides[(-orientation + 1) % 4]
         
-    def left(self):
-        return self.sides[(self.orientation + 2) % 4]
+    def left(self, orientation):
+        return self.sides[(-orientation + 2) % 4]
         
-    def top(self):
-        return self.sides[(self.orientation + 3) % 4]
+    def top(self, orientation):
+        return self.sides[(-orientation + 3) % 4]
         
     def invert(self): # change polarity of sides, male <-> female
         for side in self.sides:
@@ -300,11 +414,8 @@ class Puzzle:
         assert(n*m < 2**31 - 1) # int32 for ids
         self.size = (n, m)
         
-        grid = np.zeros((n, m), dtype=np.uint32)
-        self.pieces_dict = {}
-        # random ids for pieces
-        ids = np.arange(n*m)
-        np.random.shuffle(ids)
+        grid = np.zeros((n, m), dtype=np.int32)
+        self.pieces = {}
         counter = 0
 
         for i in range(n):
@@ -314,12 +425,12 @@ class Puzzle:
                 
                 # match left neighbor's right
                 if j > 0:
-                    left = self.pieces_dict[grid[i][j - 1]].right().copy()
+                    left = self.pieces[grid[i][j - 1]].right(0).copy()
                     left.male = not left.male
                     
                 # match top neighbor's bottom
                 if i > 0:
-                    top = self.pieces_dict[grid[i - 1][j]].bottom().copy()
+                    top = self.pieces[grid[i - 1][j]].bottom(0).copy()
                     top.male = not top.male
 
                 # generate new sides
@@ -331,9 +442,9 @@ class Puzzle:
                 if i < n - 1:
                     bottom = Side.generate()
                 
-                piece = Piece(right, bottom, left, top, id=ids[counter])
+                piece = Piece(right, bottom, left, top, id=counter)
                 grid[i][j] = piece.id
-                self.pieces_dict[piece.id] = piece
+                self.pieces[piece.id] = piece
                 counter += 1
 
         self.solution = grid
@@ -341,9 +452,6 @@ class Puzzle:
         np.random.shuffle(shuffled)
         self.grid = np.reshape(shuffled, self.size)
         
-        # random pieces orientation
-        for piece in self.pieces_dict.values():
-           piece.orientation = np.random.randint(0, 4)
     
     
 # error between randomly generated, matching sides
@@ -385,18 +493,18 @@ def getRandomError(iterations):
     return mean, std
 
 class State:
-    def __init__(self, grid, grid_orientations, remaining, error, next):
+    def __init__(self, grid, orientations, remaining, error):
         self.grid = grid
-        self.grid_orientations = grid_orientations
+        self.orientations = orientations
         self.remaining = remaining # set of piece ids
-        self.next_candidates = np.array([(p_id, orientation) for p_id in remaining for orientation in [0, 1, 2, 3]]) # ordered list of best matching pieces to try
         self.error = error
-        self.next = next # linear index in grid where to place next piece
         
     # use < between states for priority queue DFS
     def __lt__(self, other):
-        # TODO: use admissible heuristic (never overestimates) to guarantee global solution
         
+        return self.error < other.error
+        
+        # TODO: use admissible heuristic (never overestimates) to guarantee global solution
         # use expected error
         mean, std = getRandomMatchError()
         val = 4 * mean
@@ -405,8 +513,10 @@ class State:
         return self.error + e0 < other.error + e1
     
 class Solver:
-    def __init__(self, puzzle: Puzzle):
+    def __init__(self, puzzle: Puzzle, visualizer: Visualizer):
         self.puzzle = puzzle
+        self.visualizer = visualizer
+        
         n, m = puzzle.size
         
         mean, std = getRandomMatchError()
@@ -460,52 +570,48 @@ class Solver:
         self.grid_counter = np.zeros((n, m)) # count how many trys are needed per location during solving
     
     # given linear grid index, return placeholder piece at this location (for later searching)
-    def describePiece(self, state, position):
+    def describePiece(self, grid, orientations, position):
         i, j = divmod(position, m)
         
         if j == 0:
             left = Side.flat()
         else:
-            neighbor_id = state.grid[i][j - 1]
+            neighbor_id = grid[i][j - 1]
             if neighbor_id < 0:
                 left = Side.unspecified()
             else:
-                piece = self.puzzle.pieces_dict[neighbor_id]
-                piece.orientation = state.grid_orientations[i][j - 1]
-                left = piece.right().copy()
+                piece = self.puzzle.pieces[neighbor_id]
+                left = piece.right(orientations[i][j - 1]).copy()
         
         if i == 0:
             top = Side.flat()
         else:
-            neighbor_id = state.grid[i - 1][j]
+            neighbor_id = grid[i - 1][j]
             if neighbor_id < 0:
                 top = Side.unspecified()
             else:
-                piece = self.puzzle.pieces_dict[neighbor_id]
-                piece.orientation = state.grid_orientations[i - 1][j]
-                top = piece.bottom().copy()
+                piece = self.puzzle.pieces[neighbor_id]
+                top = piece.bottom(orientations[i - 1][j]).copy()
         
         if j == m - 1:
             right = Side.flat()
         else:
-            neighbor_id = state.grid[i][j + 1]
+            neighbor_id = grid[i][j + 1]
             if neighbor_id < 0:
                 right = Side.unspecified()
             else:
-                piece = self.puzzle.pieces_dict[neighbor_id]
-                piece.orientation = state.grid_orientations[i][j + 1]
-                right = piece.left().copy()
+                piece = self.puzzle.pieces[neighbor_id]
+                right = piece.left(orientations[i][j + 1]).copy()
         
         if i == n - 1:
             bottom = Side.flat()
         else:
-            neighbor_id = state.grid[i + 1][j]
+            neighbor_id = grid[i + 1][j]
             if neighbor_id < 0:
                 bottom = Side.unspecified()
             else:
-                piece = self.puzzle.pieces_dict[neighbor_id]
-                piece.orientation = state.grid_orientations[i + 1][j]
-                bottom = piece.top().copy()
+                piece = self.puzzle.pieces[neighbor_id]
+                bottom = piece.top(orientations[i + 1][j]).copy()
 
         placeholder = Piece(
             right,
@@ -519,15 +625,16 @@ class Solver:
     
     # find globally optimal solution (NP-hard)
     def branchAndBound(self, verbose = False):
-        n, m = self.puzzle.size
         
+        # create first state
+        n, m = self.puzzle.size
         state = State(
-            grid = self.initialGrid, # empty grid is negative
-            grid_orientations = np.zeros((n, m), dtype=np.uint32), # empty
-            remaining = {p.id for p in self.puzzle.pieces_dict.values()}, # set of pieces remaining to be placed
+            grid = self.initialGrid,
+            orientations = np.zeros((n, m), dtype=np.int32),
+            remaining = {p.id for p in self.puzzle.pieces.values()}, # set of pieces remaining to be placed
             error = 0.0, # total error is the sum of all side matching errors
-            next = np.argmin(self.initialGrid), # start with most negative position
             )
+        
         best_error = float('inf')
         best_solution = state
         
@@ -541,84 +648,126 @@ class Solver:
         while queue:
             state = heapq.heappop(queue)
             
-            if verbose:
-                print_grid(state.grid)
-                time.sleep(0.2)
-            
-            states_explored += 1
-            if verbose: print(f'\rExplored: {states_explored}', end='')
-            
-            
             # prune
             if state.error >= best_error:
                 continue
-               
+                
+            states_explored += 1
+            
+            if verbose: 
+                print_grid(state.grid, states_explored)
+                time.sleep(0.1)
+            
             # found valid solution
             if len(state.remaining) == 0:
                 best_error = state.error
                 best_solution = state
                 
                 if verbose: print(f"\nLocal solution found, error: {state.error:.5f}")
+                
                 if state.error < self.abortThreshold:
                     is_local_solution = True
                     break
                     
                 continue
             
-            # log progress
-            i, j = divmod(state.next, m)
-            self.grid_counter[i, j] += 1
-            
-            
+            # ordered list of best matching pieces to try next
+            next_candidates = np.array([(p_id, orientation) for p_id in state.remaining for orientation in [0, 1, 2, 3]])
             
             # describe missing piece
-            placeholder = self.describePiece(state, state.next)
-            
-            # calculate errors
-            next_candidate_errors = np.zeros(len(state.next_candidates))
-            for index, (candidate_id, orientation) in enumerate(state.next_candidates):
-                candidate = self.puzzle.pieces_dict[candidate_id]
-                next_candidate_errors[index] = placeholder.distance(candidate, orientation)
-            
-            # prune inf errors
-            mask = next_candidate_errors != np.inf
-            next_candidate_errors = next_candidate_errors[mask]
-            state.next_candidates = state.next_candidates[mask]
-            
-            # prune worse paths
-            new_errors = next_candidate_errors + state.error
-            mask = new_errors < best_error
-            next_candidate_errors = next_candidate_errors[mask]
-            state.next_candidates = state.next_candidates[mask]
+            next_position = np.argmin(state.grid)
+            placeholder = self.describePiece(state.grid, state.orientations, next_position)
             
             # branch
-            i, j = divmod(state.next, m)
-            for index, (candidate_id, orientation) in enumerate(state.next_candidates):
-                                
-                grid = state.grid.copy()
-                grid[i][j] = candidate_id
-                grid_orientations = state.grid_orientations.copy()
-                grid_orientations[i][j] = orientation
-                remaining = state.remaining.copy()
-                remaining.remove(candidate_id)
+            i, j = divmod(next_position, m)
+            
+            if verbose: self.grid_counter[i, j] += 1 # log progress
+            
+            for index, (candidate_id, orientation) in enumerate(next_candidates):
+                candidate = self.puzzle.pieces[candidate_id]
+                error = state.error + placeholder.distance(candidate, orientation)
                 
-                new_state = State(
-                    grid = grid,
-                    grid_orientations = grid_orientations,
-                    remaining = remaining,
-                    error = new_errors[index],
-                    next = np.argmin(grid) # best position to solve next
-                )
-                
-                heapq.heappush(queue, new_state)
+                if error < best_error:
+                    grid = state.grid.copy()
+                    orientations = state.orientations.copy()
+                    remaining = state.remaining.copy()
+                    
+                    grid[i][j] = candidate_id
+                    orientations[i][j] = orientation
+                    remaining.remove(candidate_id)
+                    
+                    new_state = State(
+                        grid = grid,
+                        orientations = orientations,
+                        remaining = remaining,
+                        error = error
+                    )
+                    
+                    heapq.heappush(queue, new_state)
         
-        
-        if not is_local_solution:
-            if verbose: print(f"\nGlobally optimal solution found with error: {best_error:.5f}")
+        if not is_local_solution and verbose: print(f"\nGlobally optimal solution found with error: {best_error:.5f}")
         
         stats = {"states_explored": states_explored, "is_local_solution": is_local_solution}
-        return best_solution.grid, best_solution.grid_orientations, stats
+        return best_solution.grid, best_solution.orientations, stats
     
+    
+    def greedy(self):
+        n, m = self.puzzle.size
+        remaining = {p.id for p in self.puzzle.pieces.values()}
+        grid = self.initialGrid
+        orientations = np.zeros((n, m), dtype=np.int32)
+        total_error = 0.0
+        
+        while remaining:
+            #print_grid(grid)
+            #time.sleep(0.1)
+            
+            start = time.perf_counter()
+            
+            all_candidates = np.array([(p_id, orientation) for p_id in remaining for orientation in [0, 1, 2, 3]])
+            #print(len(all_candidates))
+            
+            # describe missing piece
+            next_position = np.argmin(grid)
+            placeholder = self.describePiece(grid, orientations, next_position)
+            
+            # branch
+            i, j = divmod(next_position, m)
+            
+            error = np.inf
+            best = None
+            best_orientation = None
+            for index, (candidate_id, orientation) in enumerate(all_candidates):
+                candidate = self.puzzle.pieces[candidate_id]
+                e = placeholder.distance(candidate, orientation)
+                if e < error:
+                    error = e
+                    best = candidate_id
+                    best_orientation = orientation
+
+
+            if best is None:
+                print("ERROR")
+                exit()
+                
+            grid[i, j] = best
+            orientations[i, j] = best_orientation
+            remaining.remove(best)
+            self.visualizer.showPuzzle(grid, orientations, self.puzzle.pieces)
+            
+            end = time.perf_counter()
+            print(f"Took {end - start:.6f} seconds")
+            
+        
+        print(grid)
+        
+        cv2.waitKey(0)        # Keep window open until key press
+        cv2.destroyAllWindows()
+        return grid
+
+
+
+
 # check grid agains puzzle solution (rotation invariant)
 def is_valid_solution(grid, solution):
     return np.array_equal(grid, solution) \
@@ -633,7 +782,6 @@ def performance_measuring(n, m):
     states_explored = []
     
     for i in range(50):
-        #print(i)
         puzzle = Puzzle(n, m)
     
         solver = Solver(puzzle)
@@ -647,7 +795,6 @@ def performance_measuring(n, m):
         
         states_explored.append(stats["states_explored"])
     
-    #print(runtimes)
     print(f'Runtime: {np.mean(runtimes)}')
     print('States')
     print(f'Mean: {np.mean(states_explored)}, Std: {np.std(states_explored)}, Median: {np.median(states_explored)}')
@@ -662,20 +809,23 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     
-    n, m = 5, 5
+    n, m = 10, 10
     #performance_measuring(n, m); exit()
 
     
     puzzle = Puzzle(n, m)
-    solver = Solver(puzzle)
-    grid, orientations, stats = solver.branchAndBound()
+    vis = VisualizerCV(cell_size=64, upscale_factor=2)
+    solver = Solver(puzzle, vis)
+    grid = solver.greedy();exit()
+    
+    grid, orientations, stats = solver.branchAndBound(verbose=True)
     print(stats)
+    assert(is_valid_solution(grid, puzzle.solution))
+    
     
     puzzle.grid = grid
     for i in range(n):
         for j in range(m):
-            piece = puzzle.pieces_dict[puzzle.grid[i][j]]
+            piece = puzzle.pieces[puzzle.grid[i][j]]
             piece.orientation = orientations[i][j]
     
-    vis = Visualizer()
-    #vis.showPuzzle(puzzle)
