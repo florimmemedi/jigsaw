@@ -7,10 +7,16 @@ import random
 import math
 import heapq
 import time
+import os
 from functools import lru_cache
 
 import numpy as np
 import scipy
+
+def print_grid(grid):
+    os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal
+    for row in grid:
+        print(' '.join(f'{cell:3}' if cell >= 0 else '  .' for cell in row))
 
 class Visualizer:
     def __init__(self, cell_size=1):
@@ -52,7 +58,9 @@ class Visualizer:
         self.draw_side(ax, x, y + cs/2, piece.left(), 'left')
         
         # Draw piece ID in the center
-        #ax.text(x + cs / 2, y + cs / 2, f'{str(piece.id)} ({str(piece.orientation)})', ha='center', va='center', fontsize=8, color='black')
+        show_orientation = False
+        text = f'{str(piece.id)} ({str(piece.orientation)})' if show_orientation else f'{str(piece.id)}'
+        ax.text(x + cs / 2, y + cs / 2, text, ha='center', va='center', fontsize=8, color='black')
 
     def draw_side(self, ax, x_data, y_data, side, position):
         if not side:
@@ -196,9 +204,9 @@ class Side:
         """Generate a side with random center and height_offset; all other params fixed."""
         p = {
             "center": np.random.uniform(0.2, 0.8),
-            "height": 0.376,
+            "height": np.random.uniform(0.3, 0.5),#0.376,
             "neck_width": 0.077,
-            "neck_heigth": 0.174,
+            "neck_heigth": np.random.uniform(0.1, 0.2),#0.174,
             "head_width": 0.262,
             "head_height": 0.301,
             "height_offset": np.random.uniform(-0.2, -0.1)
@@ -221,7 +229,7 @@ class Side:
     
     # compare sides of pieces
     # returns error in [0, 1/4], so for side errors add up to [0, 1]
-    def distance(self, other: "Side"):
+    def distance(self, other: "Side", polarity_check=True):
         # sides legend: __flat, --unspecified, _._normal
         
         # handle all flat cases
@@ -247,7 +255,7 @@ class Side:
 
         # normal kind — check polarity + geometry
         # _._ vs _._
-        if self.male == other.male:
+        if polarity_check and self.male == other.male:
             return float('inf')
         if self.spline is None or other.spline is None:
             return float('inf')
@@ -322,7 +330,7 @@ class Puzzle:
                 bottom = Side.flat()
                 if i < n - 1:
                     bottom = Side.generate()
-                                
+                
                 piece = Piece(right, bottom, left, top, id=ids[counter])
                 grid[i][j] = piece.id
                 self.pieces_dict[piece.id] = piece
@@ -384,10 +392,11 @@ class State:
         self.next_candidates = np.array([(p_id, orientation) for p_id in remaining for orientation in [0, 1, 2, 3]]) # ordered list of best matching pieces to try
         self.error = error
         self.next = next # linear index in grid where to place next piece
-        self.errors = np.zeros(len(self.next_candidates))
         
     # use < between states for priority queue DFS
     def __lt__(self, other):
+        # TODO: use admissible heuristic (never overestimates) to guarantee global solution
+        
         # use expected error
         mean, std = getRandomMatchError()
         val = 4 * mean
@@ -403,54 +412,49 @@ class Solver:
         mean, std = getRandomMatchError()
         self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
         self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
-        
-        # grid holds ids of already placed pieces, negative values indicate preferred order of placing next missin piece. more neg = place first
-        # example 10x10 with constant interior:
-        # [[-34  -2  -3  -4  -5  -6  -7  -8  -9 -34]
-        #  [-33  -1  -1  -1  -1  -1  -1  -1  -1 -10]
-        #  [-32  -1  -1  -1  -1  -1  -1  -1  -1 -11]
-        #  [-31  -1  -1  -1  -1  -1  -1  -1  -1 -12]
-        #  [-30  -1  -1  -1  -1  -1  -1  -1  -1 -13]
-        #  [-29  -1  -1  -1  -1  -1  -1  -1  -1 -14]
-        #  [-28  -1  -1  -1  -1  -1  -1  -1  -1 -15]
-        #  [-27  -1  -1  -1  -1  -1  -1  -1  -1 -16]
-        #  [-26  -1  -1  -1  -1  -1  -1  -1  -1 -17]
-        #  [-34 -25 -24 -23 -22 -21 -20 -19 -18 -34]]
-        # example 10x10 total order:
-        # [[-97 -65 -66 -67 -68 -69 -70 -71 -72 -97]
-        #  [-96 -64 -63 -62 -61 -60 -59 -58 -57 -73]
-        #  [-95 -56 -55 -54 -53 -52 -51 -50 -49 -74]
-        #  [-94 -48 -47 -46 -45 -44 -43 -42 -41 -75]
-        #  [-93 -40 -39 -38 -37 -36 -35 -34 -33 -76]
-        #  [-92 -32 -31 -30 -29 -28 -27 -26 -25 -77]
-        #  [-91 -24 -23 -22 -21 -20 -19 -18 -17 -78]
-        #  [-90 -16 -15 -14 -13 -12 -11 -10  -9 -79]
-        #  [-89  -8  -7  -6  -5  -4  -3  -2  -1 -80]
-        #  [-97 -88 -87 -86 -85 -84 -83 -82 -81 -97]]
-        
-        self.initialGrid = np.full((n, m), -1, dtype=np.int32)
+                
+        def _spiral_fill_negative(n, m):
+            # grid holds ids of already placed pieces, negative values indicate preferred order of placing next missin piece. more neg = place first
+            # [[ -73  -74  -75  -76  -77  -78  -79  -80  -81  -82]
+            #  [ -72  -43  -44  -45  -46  -47  -48  -49  -50  -83]
+            #  [ -71  -42  -21  -22  -23  -24  -25  -26  -51  -84]
+            #  [ -70  -41  -20   -7   -8   -9  -10  -27  -52  -85]
+            #  [ -69  -40  -19   -6   -1   -2  -11  -28  -53  -86]
+            #  [ -68  -39  -18   -5   -4   -3  -12  -29  -54  -87]
+            #  [ -67  -38  -17  -16  -15  -14  -13  -30  -55  -88]
+            #  [ -66  -37  -36  -35  -34  -33  -32  -31  -56  -89]
+            #  [ -65  -64  -63  -62  -61  -60  -59  -58  -57  -90]
+            #  [-100  -99  -98  -97  -96  -95  -94  -93  -92  -91]]
+            grid = np.full((n, m), -1, dtype=np.int32)
+            num = -1
 
-        # Define interior dimensions
-        height = n - 2
-        width = m - 2
+            # Find center cell
+            x, y = n // 2, m // 2
+            if n % 2 == 0:
+                x -= 1
+            if m % 2 == 0:
+                y -= 1
 
-        # Fill interior (row-wise decreasing)
-        interior = np.arange(-height * width, 0).reshape((height, width))
-        self.initialGrid[1:-1, 1:-1] = interior
+            # Directions: right, down, left, up
+            dirs = [(0,1), (1,0), (0,-1), (-1,0)]
+            grid[x, y] = num
+            num -= 1
 
-        # Fill edges clockwise (excluding corners)
-        counter = self.initialGrid.min() - 1
-        self.initialGrid[0, 1:-1]        = np.arange(counter, counter - width, -1); counter -= width
-        self.initialGrid[1:-1, -1]       = np.arange(counter, counter - height, -1); counter -= height
-        self.initialGrid[-1, -2:0:-1]    = np.arange(counter, counter - width, -1); counter -= width
-        self.initialGrid[-2:0:-1, 0]     = np.arange(counter, counter - height, -1); counter -= height
+            step = 1
+            while True:
+                for d in range(4):  # right, down, left, up
+                    dx, dy = dirs[d]
+                    for _ in range(step + (d // 2)):
+                        x += dx
+                        y += dy
+                        if 0 <= x < n and 0 <= y < m:
+                            grid[x, y] = num
+                            num -= 1
+                        if num < -n * m:
+                            return grid
+                step += 2
 
-        # Set all corners to min - 1
-        corner = self.initialGrid.min() - 1
-        self.initialGrid[0, 0] = corner
-        self.initialGrid[0, -1] = corner
-        self.initialGrid[-1, 0] = corner
-        self.initialGrid[-1, -1] = corner
+        self.initialGrid = _spiral_fill_negative(n, m)
 
         # logging
         self.grid_counter = np.zeros((n, m)) # count how many trys are needed per location during solving
@@ -537,6 +541,10 @@ class Solver:
         while queue:
             state = heapq.heappop(queue)
             
+            if verbose:
+                print_grid(state.grid)
+                time.sleep(0.2)
+            
             states_explored += 1
             if verbose: print(f'\rExplored: {states_explored}', end='')
             
@@ -562,23 +570,25 @@ class Solver:
             self.grid_counter[i, j] += 1
             
             
+            
             # describe missing piece
             placeholder = self.describePiece(state, state.next)
             
             # calculate errors
+            next_candidate_errors = np.zeros(len(state.next_candidates))
             for index, (candidate_id, orientation) in enumerate(state.next_candidates):
                 candidate = self.puzzle.pieces_dict[candidate_id]
-                state.errors[index] = placeholder.distance(candidate, orientation)
+                next_candidate_errors[index] = placeholder.distance(candidate, orientation)
             
             # prune inf errors
-            mask = state.errors != np.inf
-            state.errors = state.errors[mask]
+            mask = next_candidate_errors != np.inf
+            next_candidate_errors = next_candidate_errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
             # prune worse paths
-            new_errors = state.errors + state.error
+            new_errors = next_candidate_errors + state.error
             mask = new_errors < best_error
-            state.errors = state.errors[mask]
+            next_candidate_errors = next_candidate_errors[mask]
             state.next_candidates = state.next_candidates[mask]
             
             # branch
@@ -616,32 +626,16 @@ def is_valid_solution(grid, solution):
         or np.array_equal(grid, np.rot90(solution, k=2)) \
         or np.array_equal(grid, np.rot90(solution, k=3))
 
-if __name__ == "__main__":
-    
-    seed = 42
-    random.seed(seed)
-    np.random.seed(seed)
-    
-    vis = Visualizer()
-    
-    #getRandomError()
-    #getRandomMatchError()
-    #exit()
-    
-    
-    n, m = 10, 10
-    print(n, m)
+def performance_measuring(n, m):
+    print(f'Size: {n}x{m}')
     
     runtimes = []
     states_explored = []
     
-    for i in range(100):
-        print(i)
+    for i in range(50):
+        #print(i)
         puzzle = Puzzle(n, m)
     
-    
-        #vis.showPuzzle(puzzle)
-
         solver = Solver(puzzle)
         start = time.perf_counter()
         grid, orientations, stats = solver.branchAndBound()
@@ -652,19 +646,30 @@ if __name__ == "__main__":
         assert(is_valid_solution(grid, puzzle.solution))
         
         states_explored.append(stats["states_explored"])
-        #print(stats)
-        
-        #print(solver.grid_counter)
-        
-        #print(grid)
-        #print(orientations)
-        #print(puzzle.solution)
     
     #print(runtimes)
-    print(np.mean(runtimes))
-    print(states_explored)
-    print(np.mean(states_explored))
-    print(np.median(states_explored))
+    print(f'Runtime: {np.mean(runtimes)}')
+    print('States')
+    print(f'Mean: {np.mean(states_explored)}, Std: {np.std(states_explored)}, Median: {np.median(states_explored)}')
+    print(f'Min: {np.min(states_explored)}, Max: {np.max(states_explored)}')
+
+
+
+
+if __name__ == "__main__":
+    
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    
+    n, m = 5, 5
+    #performance_measuring(n, m); exit()
+
+    
+    puzzle = Puzzle(n, m)
+    solver = Solver(puzzle)
+    grid, orientations, stats = solver.branchAndBound()
+    print(stats)
     
     puzzle.grid = grid
     for i in range(n):
@@ -672,4 +677,5 @@ if __name__ == "__main__":
             piece = puzzle.pieces_dict[puzzle.grid[i][j]]
             piece.orientation = orientations[i][j]
     
+    vis = Visualizer()
     #vis.showPuzzle(puzzle)
