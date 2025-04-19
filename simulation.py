@@ -15,11 +15,29 @@ from functools import lru_cache
 import numpy as np
 import scipy
 
-def print_grid(grid, states_explored = None):
-    os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal
-    if states_explored is not None: print(f'\rExplored: {states_explored}')
-    for row in grid:
-        print(' '.join(f'{cell:3}' if cell >= 0 else '  .' for cell in row))
+def print_grid(grid, orientation=None, states_explored=None, clear=True):
+    if clear:
+        os.system('cls' if os.name == 'nt' else 'clear')
+    if states_explored is not None:
+        print(f'Explored: {states_explored}')
+
+    arrows = ['>', 'v', '<', '^']
+    max_val = np.max(grid[grid >= 0]) if np.any(grid >= 0) else 0
+    width = len(str(max_val)) + 1  # digits + 1 char for arrow or space
+
+    for i, row in enumerate(grid):
+        line = ""
+        for j, cell in enumerate(row):
+            if cell < 0:
+                line += f"{'.':>{width}} "
+            elif orientation is not None:
+                arrow = arrows[orientation[i, j] % 4]
+                line += f"{cell:{width - 1}}{arrow} "
+            else:
+                line += f"{cell:{width}} "
+        print(line)
+
+
         
         
 class VisualizerCV:
@@ -34,16 +52,18 @@ class VisualizerCV:
         h, w = n * cs, m * cs
         if not hasattr(self, 'canvas') or self.canvas.shape[:2] != (h, w):
             self.canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
-            self.drawn_cells.clear()
+        else:
+            self.canvas.fill(255)
+        self.drawn_cells.clear()
 
         for i in range(n):
             for j in range(m):
                 piece_id = grid[i, j]
-                if piece_id < 0:
-                    continue
-                if (i, j) in self.drawn_cells:
-                    continue
-                self.draw_piece(i, j, pieces[piece_id], orientations[i, j])
+                if piece_id < 0: continue
+                if (i, j) in self.drawn_cells: continue
+                piece_id = grid[i, j]
+                usage_count = np.sum(grid == piece_id)
+                self.draw_piece(i, j, pieces[piece_id], orientations[i, j], usage_count=usage_count)
                 self.drawn_cells.add((i, j))
 
         # Downscale for display
@@ -51,13 +71,14 @@ class VisualizerCV:
         cv2.imshow("Puzzle", small)
         cv2.waitKey(1)
 
-    def draw_piece(self, row, col, piece, orientation):
+    def draw_piece(self, row, col, piece, orientation, usage_count=1):
         cs = self.cell_size * self.upscale
         x = col * cs
         y = row * cs
 
         # Draw square
-        cv2.rectangle(self.canvas, (x, y), (x + cs, y + cs), (200, 200, 200), thickness=-1)
+        bg_color = (200, 200, 200) if usage_count <= 1 else (180, 255, 180)
+        cv2.rectangle(self.canvas, (x, y), (x + cs, y + cs), bg_color, thickness=-1)
         cv2.rectangle(self.canvas, (x, y), (x + cs, y + cs), (100, 100, 100), thickness=max(1, self.upscale))
 
         # Draw piece ID in center
@@ -342,7 +363,7 @@ class Side:
         
     
     
-    # compare sides of pieces
+    # compare sides of pieces for placeholder use
     # returns error in [0, 1/4], so for side errors add up to [0, 1]
     def distance(self, other: "Side", polarity_check=True):
         # sides legend: __flat, --unspecified, _._normal
@@ -379,7 +400,16 @@ class Side:
         distances = np.sum((self.spline - other.spline)**2, axis=1)
         return np.mean(distances) / 4.0
                 
-  
+    # symmetric, compares actual pieces sides
+    def matching_cost(self, other):
+        if self.male == other.male: return np.inf
+        if self.kind == "flat" or other.kind == "flat": return np.inf
+        if self.kind == "unspecified" or other.kind == "unspecified": return np.inf
+        
+        # squared L2 distance
+        distances = np.sum((self.spline - other.spline)**2, axis=1)
+        return np.mean(distances)
+        
 
 class Piece:
     def __init__(self, right, bottom, left, top, id=None):
@@ -476,7 +506,7 @@ def getRandomMatchError(iterations = 1000):
 
 # calculate errors between randomly generated splines
 @lru_cache
-def getRandomError(iterations):
+def getRandomError(iterations = 1000):
     errors = np.zeros(iterations)
     for i in range(iterations):
         s0 = Side.generate()
@@ -519,10 +549,7 @@ class Solver:
         
         n, m = puzzle.size
         
-        mean, std = getRandomMatchError()
-        self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
-        self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
-                
+          
         def _spiral_fill_negative(n, m):
             # grid holds ids of already placed pieces, negative values indicate preferred order of placing next missin piece. more neg = place first
             # [[ -73  -74  -75  -76  -77  -78  -79  -80  -81  -82]
@@ -625,6 +652,11 @@ class Solver:
     
     # find globally optimal solution (NP-hard)
     def branchAndBound(self, verbose = False):
+        
+        mean, std = getRandomMatchError()
+        self.randomErrorThreshold = 4 * mean # per piece error threshold, set to 0 for perfect matching
+        self.abortThreshold = n*m*self.randomErrorThreshold # solutions with this error are regarded good enough and search is aborted
+              
         
         # create first state
         n, m = self.puzzle.size
@@ -765,8 +797,328 @@ class Solver:
         cv2.destroyAllWindows()
         return grid
 
+    
+    # solves puzzle given only a subset of pieces
+    def partial_solve(self):
+        subset = 1.0 # 1: all pieces, 0.5: half of the pieces available
+        
+        n, m = self.puzzle.size
+        all_pieces = list(self.puzzle.pieces.values())
+        pieces = random.sample(all_pieces, int(n * m * subset))
+        pieces_dict = {piece.id: piece for piece in pieces}
+        
+        mean, std = getRandomMatchError()
+        edge_matching_threshold = mean + 2*std
+        
+        # store pairwise side-matching costs using priority queue
+        queue = []
+        
+        for i in range(len(pieces)):
+            for j in range(i + 1, len(pieces)):
+                piece0 = pieces[i]
+                piece1 = pieces[j]
+                
+                for orientation0, side0 in enumerate(piece0.sides):
+                    for orientation1, side1 in enumerate(piece1.sides):
+                        cost = side0.matching_cost(side1)
+                        
+                        if cost > edge_matching_threshold: continue
+                        side_match = (cost, piece0.id, piece1.id, orientation0, orientation1)
+                        queue.append(side_match)
+        
+        heapq.heapify(queue)
+        
+        # initialize 1-piece clusters
+        clusters = {}
+        for piece in pieces:
+            clusters[piece.id] = Cluster(piece.id)
+        
+        while queue:
+            # sides to combine
+            _, piece0, piece1, orientation0, orientation1 = heapq.heappop(queue)
+            
+            cluster0 = clusters[piece0]
+            cluster1 = clusters[piece1]
+            
+            if cluster0 is cluster1: continue # already in same cluster
+            
+            
+            ## align clusters
+            # translation
+            pos0, _ = cluster0.poses[piece0]
+            pos1, _ = cluster1.poses[piece1]
+            if orientation0 == 0: #right
+                offset = Position(1, 0)
+            if orientation0 == 1: #bottom
+                offset = Position(0, -1)
+            if orientation0 == 2: #left
+                offset = Position(-1, 0)
+            if orientation0 == 3: #top
+                offset = Position(0, 1)
+                
+            target_pos = pos0 + offset
+            
+            # cluster1: translate such that piece1 is at origin
+            for piece, (position, orientation) in cluster1.poses.items():
+                cluster1.poses[piece] = (position - pos1, orientation)
+           
+            # rotation (around piece1)
+            # manually found by checking all 16 possibilities
+            rotation_map = {(0, 0): 2,
+                            (0, 1): 1,
+                            (0, 2): 0,
+                            (0, 3): 3,
+                            (1, 0): 3,
+                            (1, 1): 2,
+                            (1, 2): 1,
+                            (1, 3): 0,
+                            (2, 0): 0,
+                            (2, 1): 3,
+                            (2, 2): 2,
+                            (2, 3): 1,
+                            (3, 0): 1,
+                            (3, 1): 0,
+                            (3, 2): 3,
+                            (3, 3): 2
+                            }
+            rotation = rotation_map[(orientation0, orientation1)]
+            
+            # cluster1: rotate around origin
+            for piece, (position, orientation) in cluster1.poses.items():
+                cluster1.poses[piece] = (position.rotate(rotation), (orientation + rotation)%4)
+            
+            # cluster1: translate to target position
+            for piece, (position, orientation) in cluster1.poses.items():
+                cluster1.poses[piece] = (position + target_pos, orientation)
+            
+            
+            ## check for compatibility
+            def _compatible(cluster0, cluster1):
+                for piece, (position, _) in cluster1.poses.items():
+                    
+                    # check if position is free
+                    for _, (target_position, _) in cluster0.poses.items():
+                        if position == target_position: return False
+                        
+                    # check neighborhood
+                    for orient, neighbor in enumerate(position.neighborhood()):
+                        
+                        # check if neighbor exists
+                        if not cluster0.exists(neighbor): continue
+                        
+                        piece0 = cluster0.at(neighbor)
+                        side0 = pieces_dict[piece0].sides[(orient+2)%4]
+                        side1 = pieces_dict[piece].sides[orient]
+                        
+                        # check if sides match
+                        if side0.matching_cost(side1) > edge_matching_threshold:
+                            return False
+                        
+                        orient += 1
+                        side0 = pieces_dict[piece0].sides[orient%4]
+                        side1 = pieces_dict[piece].sides[orient%4]
+                        
+                        # check for 1st border condition
+                        if not((side0.kind == "flat") == (side1.kind == "flat")):
+                            return False # either both flat, or none flat
+                        
+                        orient += 2
+                        side0 = pieces_dict[piece0].sides[orient%4]
+                        side1 = pieces_dict[piece].sides[orient%4]
+                        
+                        # check for 2nd border condition
+                        if not((side0.kind == "flat") == (side1.kind == "flat")):
+                            return False # either both flat, or none flat
+                
+                return True
+             
+            if not _compatible(cluster0, cluster1): continue
+            
+            # compatible clusters found -> merge them
+            print(f'\nMerged cluster {cluster0.id} and cluster {cluster1.id}:')
+            
+            # remove old cluster references
+            for piece in cluster0.pieces + cluster1.pieces:
+                del clusters[piece]
+            
+            # add merged cluster
+            merged = cluster0.merge(cluster1)
+            for piece in merged.pieces:
+                clusters[piece] = merged
+            
+            grid, orient = merged.grid()
+            print_grid(grid, orient, None, False)
+            
+            # self.visualizer.showPuzzle(grid, orient, self.puzzle.pieces)
+            # cv2.waitKey(0)
+            # cv2.destroyAllWindows()
+            
+            
+            
+        
+        def _stack_grids(grids, fill_value=-1):
+            """
+            Stacks 2D numpy integer arrays with 1-row and 1-column spacing between them.
+
+            Args:
+                grids (list of np.ndarray): each of shape (n_i, m_i)
+                fill_value: value to fill in the spacing and empty cells
+
+            Returns:
+                stacked_grid: large grid containing all subgrids
+            """
+            if not grids:
+                return np.array([[]], dtype=np.int32)
+
+            # Arrange in a roughly square layout
+            rows = int(np.ceil(np.sqrt(len(grids))))
+            cols = int(np.ceil(len(grids) / rows))
+
+            # Determine max grid size
+            max_h = max(grid.shape[0] for grid in grids)
+            max_w = max(grid.shape[1] for grid in grids)
+
+            # Size of final grid with spacing
+            total_h = rows * max_h + (rows - 1)
+            total_w = cols * max_w + (cols - 1)
+
+            # Initialize result grid
+            result = np.full((total_h, total_w), fill_value, dtype=np.int32)
+
+            for idx, grid in enumerate(grids):
+                r = idx // cols
+                c = idx % cols
+                start_y = r * (max_h + 1)
+                start_x = c * (max_w + 1)
+                h, w = grid.shape
+                result[start_y:start_y + h, start_x:start_x + w] = grid
+
+            return result    
 
 
+        # collect final (unique) clusters
+        unique_clusters = list(set(clusters.values()))
+
+        # collect their grids
+        all_grids = []
+        all_orients = []
+        for cluster in unique_clusters:
+            grid, orient = cluster.grid()
+            all_grids.append(grid)
+            all_orients.append(orient)
+
+        # stack and display
+        final_grid = _stack_grids(all_grids)
+        final_orient = _stack_grids(all_orients)
+        self.visualizer.showPuzzle(final_grid, final_orient, self.puzzle.pieces)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+     
+class Position:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        
+    def __add__(self, other):
+        return Position(self.x + other.x, self.y + other.y)
+        
+    def __sub__(self, other):
+        return Position(self.x - other.x, self.y - other.y)
+    
+    def __neg__(self):
+        return Position(-self.x, -self.y)
+        
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
+    def __hash__(self):
+        return hash((self.x, self.y))
+        
+    def __str__(self):
+        return f'({self.x}, {self.y})'
+        
+    def __repr__(self):
+        return f'({self.x}, {self.y})'
+        
+    def rotate(self, orientation):
+        # CW rotation by orientation * 90°
+        orientation = orientation % 4
+        if orientation == 0: return Position(self.x, self.y)
+        if orientation == 1: return Position(self.y, -self.x)
+        if orientation == 2: return Position(-self.x, -self.y)
+        if orientation == 3: return Position(-self.y, self.x)
+
+    def neighborhood(self):
+        # right, bottom, left, top
+        return [Position(self.x + 1, self.y),
+                Position(self.x, self.y - 1),
+                Position(self.x - 1, self.y),
+                Position(self.x, self.y + 1)
+               ]
+
+
+class Cluster:
+    def __init__(self, piece_id):
+        self.id = piece_id
+        self.pieces = [piece_id]
+        # position and orientation of pieces
+        self.poses = {piece_id: (Position(0, 0), 0)}
+        
+    def __eq__(self, other):
+        return self.id == other.id
+
+    def __hash__(self):
+        return hash(self.id)
+        
+    def exists(self, position):
+        for pos, _ in self.poses.values():
+            if pos == position:
+                return True
+        
+        return False
+        
+    def at(self, position):
+        for key, (pos, _) in self.poses.items():
+            if pos == position:
+                return key
+        
+        raise ValueError(f"no piece at position {position}.")
+        
+    def merge(self, other):
+        merged = Cluster(min(self.id, other.id))
+        merged.pieces = self.pieces + other.pieces
+        merged.poses = self.poses | other.poses
+        return merged
+        
+    def grid(self):
+        if not self.poses:
+            return []
+
+        # Extract all positions
+        all_positions = [pos for pos, _ in self.poses.values()]
+
+        # Compute bounding box
+        min_x = min(p.x for p in all_positions)
+        min_y = min(p.y for p in all_positions)
+        max_x = max(p.x for p in all_positions)
+        max_y = max(p.y for p in all_positions)
+
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+
+        grid = np.full((height, width), -1, dtype=np.int32)
+        orientations = np.full((height, width), -1, dtype=np.int32)
+
+        for piece_id, (pos, orient) in self.poses.items():
+            x = pos.x - min_x
+            y = pos.y - min_y
+            grid[height - y - 1, x] = piece_id  # row = -y, col = x
+            orientations[height - y - 1, x] = orient
+
+        return grid, orientations
+        
+        
 
 # check grid agains puzzle solution (rotation invariant)
 def is_valid_solution(grid, solution):
@@ -809,14 +1161,16 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     
-    n, m = 10, 10
+    n, m = 15,15
     #performance_measuring(n, m); exit()
 
     
     puzzle = Puzzle(n, m)
-    vis = VisualizerCV(cell_size=64, upscale_factor=2)
+    vis = VisualizerCV(cell_size=32, upscale_factor=2)
     solver = Solver(puzzle, vis)
-    grid = solver.greedy();exit()
+    #grid = solver.greedy();exit()
+    grid = solver.partial_solve();exit()
+    
     
     grid, orientations, stats = solver.branchAndBound(verbose=True)
     print(stats)
