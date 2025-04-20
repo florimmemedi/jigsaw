@@ -2,7 +2,8 @@
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-plt.ion()  # turn on interactive mode
+from matplotlib.widgets import Slider
+#plt.ion()  # turn on interactive mode
 import cv2
 
 import random
@@ -306,6 +307,100 @@ def apply_projective(points, proj):
     pts_proj = pts @ H.T
     pts_proj /= pts_proj[:, 2][:, None]
     return pts_proj[:, :2]
+
+
+def apply_lens_distortion(points, k1=0.1, k2=0.01, k3=0.0, p1=0.0, p2=0.0):
+    distorted = np.zeros_like(points)
+    x = points[:, 0]
+    y = points[:, 1]
+
+    r2 = x**2 + y**2
+    radial = 1 + k1 * r2 + k2 * r2**2 + k3 * r2**3
+    x_radial = x * radial
+    y_radial = y * radial
+
+    x_tangential = 2 * p1 * x * y + p2 * (r2 + 2 * x**2)
+    y_tangential = p1 * (r2 + 2 * y**2) + 2 * p2 * x * y
+
+    distorted[:, 0] = x_radial + x_tangential
+    distorted[:, 1] = y_radial + y_tangential
+
+    return distorted
+
+def scale_to_fill_view(points, scale=1.0):
+    # center around 0.5,0.5
+    centered = points - 0.5
+    return centered * scale + 0.5
+
+
+def show_distortion_grid(grid_size=(3, 3), num_points=100):
+    fig, axes = plt.subplots(*grid_size, figsize=(9, 9))
+    plt.subplots_adjust(left=0.25, bottom=0.35)
+    axes = axes.flatten()
+
+    # Generate splines
+    splines = [[Side.generate(num_points).spline for _ in range(grid_size[1])] for _ in range(grid_size[0])]
+    flat_splines = [spline for row in splines for spline in row]
+
+    # Initial plots
+    lines_orig = []
+    lines_dist = []
+    for ax, spline in zip(axes, flat_splines):
+        l1, = ax.plot(spline[:, 0], spline[:, 1], 'b-', lw=1)
+        l2, = ax.plot([], [], 'r-', lw=1)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        lines_orig.append(l1)
+        lines_dist.append(l2)
+
+    # Slider setup
+    axcolor = 'lightgoldenrodyellow'
+    slider_ax = {
+        name: plt.axes([0.25, 0.25 - i * 0.04, 0.65, 0.03], facecolor=axcolor)
+        for i, name in enumerate(["k1", "k2", "p1", "p2", "scale"])
+    }
+
+    sliders = {
+        "k1": Slider(slider_ax["k1"], "k1", -1.0, 1.0, valinit=0.0),
+        "k2": Slider(slider_ax["k2"], "k2", -1.0, 1.0, valinit=0.0),
+        "p1": Slider(slider_ax["p1"], "p1", -0.2, 0.2, valinit=0.0),
+        "p2": Slider(slider_ax["p2"], "p2", -0.2, 0.2, valinit=0.0),
+        "scale": Slider(slider_ax["scale"], "scale", 0.01, 2.0, valinit=1.0),
+    }
+
+    def update(val):
+        params = {k: sliders[k].val for k in ["k1", "k2", "p1", "p2"]}
+        scale = sliders["scale"].val
+
+        all_x, all_y = [], []
+
+        for spline, l_dist in zip(flat_splines, lines_dist):
+            spline = scale_to_fill_view(spline, scale)
+            spline = apply_lens_distortion(spline, **params)
+            spline = scale_to_fill_view(spline, 1.0/scale)
+            l_dist.set_data(spline[:, 0], spline[:, 1])
+            all_x.append(spline[:, 0])
+            all_y.append(spline[:, 1])
+
+        # Compute global bounding box
+        all_x = np.concatenate(all_x)
+        all_y = np.concatenate(all_y)
+        margin = 0.05
+        xlim = (all_x.min() - margin, all_x.max() + margin)
+        ylim = (all_y.min() - margin, all_y.max() + margin)
+
+        for ax in axes:
+            ax.set_xlim(0,1)
+            ax.set_ylim(-0.1,1)
+
+        fig.canvas.draw_idle()
+
+    for s in sliders.values():
+        s.on_changed(update)
+
+    update(None)
+    plt.show()
+
        
 class Side:
     def __init__(self, spline: np.ndarray, male: bool, kind: str = "normal"):
@@ -317,9 +412,12 @@ class Side:
     def copy(self):
         if self.spline is None:
             return Side(None, self.male, self.kind)
-            
+        
+        spline = np.copy(self.spline)
+        
         # small perturbations
-        delta_e = 0.0
+        delta_e = 0.02
+        
         projective = {
             "translate_x": 0.0,
             "translate_y": 0.0,
@@ -330,7 +428,10 @@ class Side:
             "perspective_x": np.random.uniform(-delta_e, delta_e),
             "perspective_y": np.random.uniform(-delta_e, delta_e)
         }
-        spline = apply_projective(np.copy(self.spline), projective)
+        
+        #spline = scale_to_fill_view(spline, scale=1.0)  # closer = larger scale
+        spline = apply_lens_distortion(spline, k1=0.002, k2=0.005, p1=0.001, p2=0.001)
+        spline = apply_projective(spline, projective)
         
         return Side(spline, self.male, self.kind)
 
@@ -1164,6 +1265,7 @@ if __name__ == "__main__":
     n, m = 15,15
     #performance_measuring(n, m); exit()
 
+    #show_distortion_grid(grid_size=(3, 3), num_points=100); exit()
     
     puzzle = Puzzle(n, m)
     vis = VisualizerCV(cell_size=32, upscale_factor=2)
